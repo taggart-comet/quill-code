@@ -1,0 +1,7 @@
+/target
+/.idea
+/.venv
+venv/
+/.claude
+/models/
+./models/

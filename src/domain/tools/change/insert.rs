@@ -1,45 +1,48 @@
 use super::Error;
 use crate::domain::tools::{Tool, ToolResult};
-use crate::utils::remove_lines;
+use crate::utils::insert_content;
 use serde::Deserialize;
 use serde_yaml::Value as Yaml;
 
-pub struct Remove;
+pub struct Insert;
 
 #[derive(Deserialize)]
-struct RemoveInput {
+struct InsertInput {
     full_path_to_file: String,
     target_line: usize,
-    count: usize,
+    #[serde(default)]
+    insert_content: String,
 }
 
-impl Remove {
-    fn parse_input(input: Yaml) -> Result<RemoveInput, Error> {
+impl Insert {
+    fn parse_input(input: Yaml) -> Result<InsertInput, Error> {
         serde_yaml::from_value(input).map_err(|e| Error::InvalidYaml(e.to_string()))
     }
 }
 
-impl Tool for Remove {
+impl Tool for Insert {
     fn name(&self) -> &'static str {
-        "change_remove"
+        "change_insert"
     }
 
     fn work(&self, input: Yaml) -> ToolResult {
         let input_copy = input.clone();
-        
+
         match Self::parse_input(input) {
-            Ok(parsed) => {
-                match remove_lines(&parsed.full_path_to_file, parsed.target_line, parsed.count) {
-                    Ok(()) => ToolResult::ok(self.name(), input_copy, Yaml::Null),
-                    Err(e) => ToolResult::error(self.name(), input_copy, e.to_string()),
-                }
-            }
+            Ok(parsed) => match insert_content(
+                &parsed.full_path_to_file,
+                parsed.target_line,
+                &parsed.insert_content,
+            ) {
+                Ok(()) => ToolResult::ok(self.name(), input_copy, Yaml::Null),
+                Err(e) => ToolResult::error(self.name(), input_copy, e.to_string()),
+            },
             Err(e) => ToolResult::error(self.name(), input_copy, e.to_string()),
         }
     }
 
     fn desc(&self) -> &'static str {
-        "Remove a specified number of lines from a file starting at a target line"
+        "Insert content at a specific line in an existing file"
     }
 
     fn input_format(&self) -> &'static str {
@@ -47,7 +50,7 @@ impl Tool for Remove {
 input:
   full_path_to_file: string
   target_line: integer
-  count: integer
+  insert_content: string
 "
     }
 }

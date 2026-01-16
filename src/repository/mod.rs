@@ -1,9 +1,11 @@
 pub mod meta;
+pub mod models;
 pub mod projects;
-pub mod sessions;
 pub mod session_requests;
+pub mod sessions;
 
 pub use meta::MetaRepository;
+pub use models::{ModelRow, ModelsRepository};
 pub use projects::{ProjectRow, ProjectsRepository};
-pub use sessions::{SessionRow, SessionsRepository};
 pub use session_requests::{SessionRequestRow, SessionRequestsRepository};
+pub use sessions::{SessionRow, SessionsRepository};

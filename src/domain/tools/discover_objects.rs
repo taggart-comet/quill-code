@@ -1,12 +1,11 @@
+use crate::domain::session::Request;
+use crate::domain::tools::{Tool, ToolInput, ToolResult};
 use crate::utils::{Lang, ParsedObject, UniversalParser};
-use crate::domain::tools::{Tool, ToolResult};
-use serde::Deserialize;
-use serde_yaml::Value as Yaml;
 use std::collections::BTreeMap;
 
-pub struct ListObjects;
+pub struct DiscoverObjects;
 
-impl ListObjects {
+impl DiscoverObjects {
     pub fn parse_file(file_path: &str) -> Result<(Lang, Vec<ParsedObject>), String> {
         let mut parser = UniversalParser::new();
         parser.parse_file(file_path)
@@ -44,43 +43,44 @@ impl ListObjects {
     }
 }
 
-#[derive(Deserialize)]
-struct ListObjectsInput {
-    full_path_to_file: String,
-}
-
-impl Tool for ListObjects {
+impl Tool for DiscoverObjects {
     fn name(&self) -> &'static str {
-        "list_objects"
+        "discover_objects"
     }
 
-    fn work(&self, input: Yaml) -> ToolResult {
-        let input_copy = input.clone();
-        
-        let parsed: ListObjectsInput = match serde_yaml::from_value(input) {
-            Ok(p) => p,
-            Err(e) => return ToolResult::error(self.name(), input_copy, format!("invalid input: {}", e)),
+    fn work(&self, input: &ToolInput, _request: &dyn Request) -> ToolResult {
+        let full_path_to_file = match input.require_text("full_path_to_file") {
+            Ok(path) => path,
+            Err(e) => return ToolResult::error(self.name(), input, e),
         };
 
-        if parsed.full_path_to_file.is_empty() {
-            return ToolResult::error(self.name(), input_copy, "full_path_to_file is required".to_string());
+        if full_path_to_file.is_empty() {
+            return ToolResult::error(
+                self.name(),
+                input,
+                "full_path_to_file is required".to_string(),
+            );
         }
 
-        match Self::parse_file(&parsed.full_path_to_file) {
-            Ok((lang, objects)) => ToolResult::ok(self.name(), input_copy, Yaml::String(Self::format_output(lang, &objects))),
-            Err(e) => ToolResult::error(self.name(), input_copy, e.to_string()),
+        match Self::parse_file(&full_path_to_file) {
+            Ok((lang, objects)) => {
+                ToolResult::ok(self.name(), input, Self::format_output(lang, &objects))
+            }
+            Err(e) => ToolResult::error(self.name(), input, e.to_string()),
         }
     }
 
-    fn desc(&self) -> &'static str {
-        "Lists language-aware objects in a source file. Supports: Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, Ruby, and more."
-    }
+    fn spec(&self) -> String {
+        format!(
+            r#"Use the `{}` tool to discover functions, classes, structs in a source file. Fill the input format precisely:
 
-    fn input_format(&self) -> &'static str {
-        "
-input:
-  full_path_to_file: string
-"
+<tool_name>{}</tool_name>
+<input>
+  <full_path_to_file>string</full_path_to_file>  # path to the source file
+</input>"#,
+            self.name(),
+            self.name()
+        )
     }
 }
 
@@ -122,7 +122,7 @@ pub fn public_function(x: i32) -> i32 {
     x * 2
 }
 "#;
-        let objects = ListObjects::parse_source(source, Lang::Rust).unwrap();
+        let objects = DiscoverObjects::parse_source(source, Lang::Rust).unwrap();
 
         assert!(objects.iter().any(|o| o.name == "MyStruct"));
         assert!(objects.iter().any(|o| o.name == "MyEnum"));
@@ -148,7 +148,7 @@ class MyClass:
 async def async_func():
     pass
 "#;
-        let objects = ListObjects::parse_source(source, Lang::Python).unwrap();
+        let objects = DiscoverObjects::parse_source(source, Lang::Python).unwrap();
 
         assert!(objects.iter().any(|o| o.name == "hello"));
         assert!(objects.iter().any(|o| o.name == "MyClass"));
@@ -172,7 +172,7 @@ class MyClass {
 
 const arrowFn = () => {};
 "#;
-        let objects = ListObjects::parse_source(source, Lang::JavaScript).unwrap();
+        let objects = DiscoverObjects::parse_source(source, Lang::JavaScript).unwrap();
 
         assert!(objects.iter().any(|o| o.name == "hello"));
         assert!(objects.iter().any(|o| o.name == "MyClass"));
@@ -196,7 +196,7 @@ func (p *Person) Greet() string {
     return "Hello, " + p.Name
 }
 "#;
-        let objects = ListObjects::parse_source(source, Lang::Go).unwrap();
+        let objects = DiscoverObjects::parse_source(source, Lang::Go).unwrap();
 
         assert!(objects.iter().any(|o| o.name == "hello"));
         assert!(objects.iter().any(|o| o.name == "Greet"));

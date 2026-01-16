@@ -1,5 +1,5 @@
-use crate::domain::tools::{Tool, ToolResult};
-use serde_yaml::Value as Yaml;
+use crate::domain::session::Request;
+use crate::domain::tools::{Tool, ToolInput, ToolResult};
 
 pub struct Finish;
 
@@ -8,19 +8,21 @@ impl Tool for Finish {
         "finish"
     }
 
-    fn work(&self, input: Yaml) -> ToolResult {
-        ToolResult::ok(
+    fn work(&self, input: &ToolInput, _request: &dyn Request) -> ToolResult {
+        ToolResult::ok(self.name(), input, "The request is fulfilled".to_string())
+    }
+
+    fn spec(&self) -> String {
+        format!(
+            r#"Use the `{}` tool when the task was accomplished or you have a question to the user. Fill the input format precisely:
+
+<tool_name>{}</tool_name>
+<input>
+  <message_for_user>describe here, what was done</message_for_user>
+</input>
+"#,
             self.name(),
-            input,
-            Yaml::String("The request is fulfilled".to_string()),
+            self.name()
         )
-    }
-
-    fn desc(&self) -> &'static str {
-        "Finish working on user request, as everything asked for has been done."
-    }
-
-    fn input_format(&self) -> &'static str {
-        ""
     }
 }

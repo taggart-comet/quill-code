@@ -40,7 +40,10 @@ impl HeuristicParser {
                 name: "PHP",
                 extensions: &["php", "phtml", "php3", "php4", "php5", "phps"],
                 patterns: &[
-                    (r"(?m)^\s*(?:public|private|protected|static|\s)*\s*function\s+(\w+)\s*\(", ObjectKind::Function),
+                    (
+                        r"(?m)^\s*(?:public|private|protected|static|\s)*\s*function\s+(\w+)\s*\(",
+                        ObjectKind::Function,
+                    ),
                     (r"(?m)^\s*(?:abstract\s+)?class\s+(\w+)", ObjectKind::Class),
                     (r"(?m)^\s*interface\s+(\w+)", ObjectKind::Interface),
                     (r"(?m)^\s*trait\s+(\w+)", ObjectKind::Trait),
@@ -56,12 +59,24 @@ impl HeuristicParser {
                 name: "Kotlin",
                 extensions: &["kt", "kts"],
                 patterns: &[
-                    (r"(?m)^\s*(?:public|private|protected|internal|inline|suspend|\s)*\s*fun\s+(?:<[^>]+>\s*)?(\w+)\s*\(", ObjectKind::Function),
-                    (r"(?m)^\s*(?:data\s+|sealed\s+|abstract\s+|open\s+)?class\s+(\w+)", ObjectKind::Class),
-                    (r"(?m)^\s*(?:fun\s+)?interface\s+(\w+)", ObjectKind::Interface),
+                    (
+                        r"(?m)^\s*(?:public|private|protected|internal|inline|suspend|\s)*\s*fun\s+(?:<[^>]+>\s*)?(\w+)\s*\(",
+                        ObjectKind::Function,
+                    ),
+                    (
+                        r"(?m)^\s*(?:data\s+|sealed\s+|abstract\s+|open\s+)?class\s+(\w+)",
+                        ObjectKind::Class,
+                    ),
+                    (
+                        r"(?m)^\s*(?:fun\s+)?interface\s+(\w+)",
+                        ObjectKind::Interface,
+                    ),
                     (r"(?m)^\s*object\s+(\w+)", ObjectKind::Module),
                     (r"(?m)^\s*enum\s+class\s+(\w+)", ObjectKind::Enum),
-                    (r"(?m)^\s*(?:const\s+)?val\s+(\w+)\s*[=:]", ObjectKind::Constant),
+                    (
+                        r"(?m)^\s*(?:const\s+)?val\s+(\w+)\s*[=:]",
+                        ObjectKind::Constant,
+                    ),
                 ],
                 block_start: Some("{"),
                 block_end: Some("}"),
@@ -72,13 +87,31 @@ impl HeuristicParser {
                 name: "C#",
                 extensions: &["cs"],
                 patterns: &[
-                    (r"(?m)^\s*(?:public|private|protected|internal|static|async|virtual|override|abstract|\s)*\s*(?:\w+(?:<[^>]+>)?)\s+(\w+)\s*\([^)]*\)\s*(?:where\s+\w+\s*:\s*\w+\s*)?[{]?", ObjectKind::Function),
-                    (r"(?m)^\s*(?:public|private|protected|internal|static|abstract|sealed|partial|\s)*\s*class\s+(\w+)", ObjectKind::Class),
-                    (r"(?m)^\s*(?:public|private|protected|internal|\s)*\s*interface\s+(\w+)", ObjectKind::Interface),
-                    (r"(?m)^\s*(?:public|private|protected|internal|\s)*\s*struct\s+(\w+)", ObjectKind::Struct),
-                    (r"(?m)^\s*(?:public|private|protected|internal|\s)*\s*enum\s+(\w+)", ObjectKind::Enum),
+                    (
+                        r"(?m)^\s*(?:public|private|protected|internal|static|async|virtual|override|abstract|\s)*\s*(?:\w+(?:<[^>]+>)?)\s+(\w+)\s*\([^)]*\)\s*(?:where\s+\w+\s*:\s*\w+\s*)?[{]?",
+                        ObjectKind::Function,
+                    ),
+                    (
+                        r"(?m)^\s*(?:public|private|protected|internal|static|abstract|sealed|partial|\s)*\s*class\s+(\w+)",
+                        ObjectKind::Class,
+                    ),
+                    (
+                        r"(?m)^\s*(?:public|private|protected|internal|\s)*\s*interface\s+(\w+)",
+                        ObjectKind::Interface,
+                    ),
+                    (
+                        r"(?m)^\s*(?:public|private|protected|internal|\s)*\s*struct\s+(\w+)",
+                        ObjectKind::Struct,
+                    ),
+                    (
+                        r"(?m)^\s*(?:public|private|protected|internal|\s)*\s*enum\s+(\w+)",
+                        ObjectKind::Enum,
+                    ),
                     (r"(?m)^\s*namespace\s+([\w.]+)", ObjectKind::Module),
-                    (r"(?m)^\s*(?:public|private|protected|internal|\s)*\s*const\s+\w+\s+(\w+)\s*=", ObjectKind::Constant),
+                    (
+                        r"(?m)^\s*(?:public|private|protected|internal|\s)*\s*const\s+\w+\s+(\w+)\s*=",
+                        ObjectKind::Constant,
+                    ),
                 ],
                 block_start: Some("{"),
                 block_end: Some("}"),
@@ -89,12 +122,30 @@ impl HeuristicParser {
                 name: "Swift",
                 extensions: &["swift"],
                 patterns: &[
-                    (r"(?m)^\s*(?:@\w+\s+)*(?:public|private|internal|fileprivate|open|static|class|override|\s)*\s*func\s+(\w+)\s*[<(]", ObjectKind::Function),
-                    (r"(?m)^\s*(?:public|private|internal|fileprivate|open|final|\s)*\s*class\s+(\w+)", ObjectKind::Class),
-                    (r"(?m)^\s*(?:public|private|internal|fileprivate|\s)*\s*struct\s+(\w+)", ObjectKind::Struct),
-                    (r"(?m)^\s*(?:public|private|internal|fileprivate|\s)*\s*enum\s+(\w+)", ObjectKind::Enum),
-                    (r"(?m)^\s*(?:public|private|internal|fileprivate|\s)*\s*protocol\s+(\w+)", ObjectKind::Interface),
-                    (r"(?m)^\s*(?:public|private|internal|fileprivate|\s)*\s*extension\s+(\w+)", ObjectKind::Class),
+                    (
+                        r"(?m)^\s*(?:@\w+\s+)*(?:public|private|internal|fileprivate|open|static|class|override|\s)*\s*func\s+(\w+)\s*[<(]",
+                        ObjectKind::Function,
+                    ),
+                    (
+                        r"(?m)^\s*(?:public|private|internal|fileprivate|open|final|\s)*\s*class\s+(\w+)",
+                        ObjectKind::Class,
+                    ),
+                    (
+                        r"(?m)^\s*(?:public|private|internal|fileprivate|\s)*\s*struct\s+(\w+)",
+                        ObjectKind::Struct,
+                    ),
+                    (
+                        r"(?m)^\s*(?:public|private|internal|fileprivate|\s)*\s*enum\s+(\w+)",
+                        ObjectKind::Enum,
+                    ),
+                    (
+                        r"(?m)^\s*(?:public|private|internal|fileprivate|\s)*\s*protocol\s+(\w+)",
+                        ObjectKind::Interface,
+                    ),
+                    (
+                        r"(?m)^\s*(?:public|private|internal|fileprivate|\s)*\s*extension\s+(\w+)",
+                        ObjectKind::Class,
+                    ),
                 ],
                 block_start: Some("{"),
                 block_end: Some("}"),
@@ -105,7 +156,10 @@ impl HeuristicParser {
                 name: "Scala",
                 extensions: &["scala", "sc"],
                 patterns: &[
-                    (r"(?m)^\s*(?:override\s+)?(?:private|protected|\s)*\s*def\s+(\w+)\s*[(\[]", ObjectKind::Function),
+                    (
+                        r"(?m)^\s*(?:override\s+)?(?:private|protected|\s)*\s*def\s+(\w+)\s*[(\[]",
+                        ObjectKind::Function,
+                    ),
                     (r"(?m)^\s*(?:case\s+)?class\s+(\w+)", ObjectKind::Class),
                     (r"(?m)^\s*trait\s+(\w+)", ObjectKind::Trait),
                     (r"(?m)^\s*object\s+(\w+)", ObjectKind::Module),
@@ -121,7 +175,10 @@ impl HeuristicParser {
                 name: "Lua",
                 extensions: &["lua"],
                 patterns: &[
-                    (r"(?m)^\s*(?:local\s+)?function\s+(\w+(?:\.\w+)*)\s*\(", ObjectKind::Function),
+                    (
+                        r"(?m)^\s*(?:local\s+)?function\s+(\w+(?:\.\w+)*)\s*\(",
+                        ObjectKind::Function,
+                    ),
                     (r"(?m)^\s*(\w+)\s*=\s*function\s*\(", ObjectKind::Function),
                     (r"(?m)^\s*local\s+(\w+)\s*=\s*\{", ObjectKind::Module),
                 ],
@@ -148,7 +205,10 @@ impl HeuristicParser {
                 patterns: &[
                     (r"(?m)^\s*(\w+)\s*<-\s*function\s*\(", ObjectKind::Function),
                     (r"(?m)^\s*(\w+)\s*=\s*function\s*\(", ObjectKind::Function),
-                    (r#"(?m)^\s*setClass\s*\(\s*["'](\w+)["']"#, ObjectKind::Class),
+                    (
+                        r#"(?m)^\s*setClass\s*\(\s*["'](\w+)["']"#,
+                        ObjectKind::Class,
+                    ),
                 ],
                 block_start: Some("{"),
                 block_end: Some("}"),
@@ -205,7 +265,10 @@ impl HeuristicParser {
                 name: "OCaml",
                 extensions: &["ml", "mli"],
                 patterns: &[
-                    (r"(?m)^\s*let\s+(?:rec\s+)?(\w+)\s*[=:]", ObjectKind::Function),
+                    (
+                        r"(?m)^\s*let\s+(?:rec\s+)?(\w+)\s*[=:]",
+                        ObjectKind::Function,
+                    ),
                     (r"(?m)^\s*type\s+(\w+)", ObjectKind::Struct),
                     (r"(?m)^\s*module\s+(\w+)", ObjectKind::Module),
                     (r"(?m)^\s*class\s+(\w+)", ObjectKind::Class),
@@ -220,9 +283,18 @@ impl HeuristicParser {
                 extensions: &["zig"],
                 patterns: &[
                     (r"(?m)^\s*(?:pub\s+)?fn\s+(\w+)\s*\(", ObjectKind::Function),
-                    (r"(?m)^\s*(?:pub\s+)?const\s+(\w+)\s*=\s*struct", ObjectKind::Struct),
-                    (r"(?m)^\s*(?:pub\s+)?const\s+(\w+)\s*=\s*enum", ObjectKind::Enum),
-                    (r"(?m)^\s*(?:pub\s+)?const\s+(\w+)\s*=", ObjectKind::Constant),
+                    (
+                        r"(?m)^\s*(?:pub\s+)?const\s+(\w+)\s*=\s*struct",
+                        ObjectKind::Struct,
+                    ),
+                    (
+                        r"(?m)^\s*(?:pub\s+)?const\s+(\w+)\s*=\s*enum",
+                        ObjectKind::Enum,
+                    ),
+                    (
+                        r"(?m)^\s*(?:pub\s+)?const\s+(\w+)\s*=",
+                        ObjectKind::Constant,
+                    ),
                 ],
                 block_start: Some("{"),
                 block_end: Some("}"),
@@ -233,7 +305,10 @@ impl HeuristicParser {
                 name: "Dart",
                 extensions: &["dart"],
                 patterns: &[
-                    (r"(?m)^\s*(?:static\s+)?(?:\w+(?:<[^>]+>)?)\s+(\w+)\s*\([^)]*\)\s*(?:async\s*)?[{]", ObjectKind::Function),
+                    (
+                        r"(?m)^\s*(?:static\s+)?(?:\w+(?:<[^>]+>)?)\s+(\w+)\s*\([^)]*\)\s*(?:async\s*)?[{]",
+                        ObjectKind::Function,
+                    ),
                     (r"(?m)^\s*(?:abstract\s+)?class\s+(\w+)", ObjectKind::Class),
                     (r"(?m)^\s*enum\s+(\w+)", ObjectKind::Enum),
                     (r"(?m)^\s*mixin\s+(\w+)", ObjectKind::Trait),
@@ -248,12 +323,30 @@ impl HeuristicParser {
                 name: "Unknown",
                 extensions: &[],
                 patterns: &[
-                    (r"(?m)^\s*(?:pub\s+|public\s+|private\s+|protected\s+)?(?:static\s+)?(?:async\s+)?(?:fn|func|function|def|sub|proc)\s+(\w+)\s*[(<]", ObjectKind::Function),
-                    (r"(?m)^\s*(?:pub\s+|public\s+)?(?:abstract\s+)?(?:final\s+)?class\s+(\w+)", ObjectKind::Class),
-                    (r"(?m)^\s*(?:pub\s+|public\s+)?struct\s+(\w+)", ObjectKind::Struct),
-                    (r"(?m)^\s*(?:pub\s+|public\s+)?enum\s+(\w+)", ObjectKind::Enum),
-                    (r"(?m)^\s*(?:pub\s+|public\s+)?(?:interface|protocol|trait)\s+(\w+)", ObjectKind::Interface),
-                    (r"(?m)^\s*(?:pub\s+|public\s+)?module\s+(\w+)", ObjectKind::Module),
+                    (
+                        r"(?m)^\s*(?:pub\s+|public\s+|private\s+|protected\s+)?(?:static\s+)?(?:async\s+)?(?:fn|func|function|def|sub|proc)\s+(\w+)\s*[(<]",
+                        ObjectKind::Function,
+                    ),
+                    (
+                        r"(?m)^\s*(?:pub\s+|public\s+)?(?:abstract\s+)?(?:final\s+)?class\s+(\w+)",
+                        ObjectKind::Class,
+                    ),
+                    (
+                        r"(?m)^\s*(?:pub\s+|public\s+)?struct\s+(\w+)",
+                        ObjectKind::Struct,
+                    ),
+                    (
+                        r"(?m)^\s*(?:pub\s+|public\s+)?enum\s+(\w+)",
+                        ObjectKind::Enum,
+                    ),
+                    (
+                        r"(?m)^\s*(?:pub\s+|public\s+)?(?:interface|protocol|trait)\s+(\w+)",
+                        ObjectKind::Interface,
+                    ),
+                    (
+                        r"(?m)^\s*(?:pub\s+|public\s+)?module\s+(\w+)",
+                        ObjectKind::Module,
+                    ),
                 ],
                 block_start: Some("{"),
                 block_end: Some("}"),
@@ -263,9 +356,7 @@ impl HeuristicParser {
     }
 
     pub fn detect_language(&self, path: &str) -> Option<&LanguagePatterns> {
-        let ext = Path::new(path)
-            .extension()
-            .and_then(|e| e.to_str())?;
+        let ext = Path::new(path).extension().and_then(|e| e.to_str())?;
 
         self.language_patterns
             .iter()
@@ -287,11 +378,7 @@ impl HeuristicParser {
                         let byte_start = name_match.start();
                         let line_start = source[..byte_start].matches('\n').count() + 1;
 
-                        let line_end = self.find_block_end(
-                            &lines,
-                            line_start,
-                            lang,
-                        );
+                        let line_end = self.find_block_end(&lines, line_start, lang);
 
                         let indent_level = lines
                             .get(line_start.saturating_sub(1))
@@ -316,12 +403,7 @@ impl HeuristicParser {
         objects
     }
 
-    fn find_block_end(
-        &self,
-        lines: &[&str],
-        start_line: usize,
-        lang: &LanguagePatterns,
-    ) -> usize {
+    fn find_block_end(&self, lines: &[&str], start_line: usize, lang: &LanguagePatterns) -> usize {
         let start_idx = start_line.saturating_sub(1);
 
         if start_idx >= lines.len() {
@@ -395,10 +477,12 @@ impl HeuristicParser {
     }
 
     pub fn parse_file(&self, path: &str) -> Result<(String, Vec<HeuristicObject>), String> {
-        let source = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read file: {}", e))?;
+        let source =
+            std::fs::read_to_string(path).map_err(|e| format!("Failed to read file: {}", e))?;
 
-        let lang = self.detect_language(path).unwrap_or_else(|| self.get_fallback());
+        let lang = self
+            .detect_language(path)
+            .unwrap_or_else(|| self.get_fallback());
         let objects = self.parse(&source, lang);
 
         Ok((lang.name.to_string(), objects))

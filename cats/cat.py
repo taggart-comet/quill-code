@@ -19,6 +19,5 @@ class Cat:
     def describe(self) -> str:
         return f"{self.name} is a {self.age} year old cat feeling {self.mood}."
 
-
 def create_cat(name: str, age: int) -> Cat:
     return Cat(name, age)

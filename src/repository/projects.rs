@@ -1,10 +1,11 @@
-use rusqlite::{Connection, params, Row};
+use rusqlite::{params, Connection, Row};
 
 /// Raw database row for projects table
 #[derive(Debug, Clone)]
 pub struct ProjectRow {
     pub id: i64,
     pub name: String,
+    pub project_root: Option<String>,
     pub created_at: String,
     pub session_count: i64,
 }
@@ -14,8 +15,9 @@ impl ProjectRow {
         Ok(Self {
             id: row.get(0)?,
             name: row.get(1)?,
-            created_at: row.get(2)?,
-            session_count: row.get(3)?,
+            project_root: row.get(2)?,
+            created_at: row.get(3)?,
+            session_count: row.get(4)?,
         })
     }
 }
@@ -29,10 +31,24 @@ impl<'a> ProjectsRepository<'a> {
         Self { conn }
     }
 
+    pub fn find_by_id(&self, id: i64) -> Result<Option<ProjectRow>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, project_root, created_at, session_count FROM projects WHERE id = ?")
+            .map_err(|e| e.to_string())?;
+
+        let result = stmt
+            .query_row(params![id], ProjectRow::from_row)
+            .optional()
+            .map_err(|e| e.to_string())?;
+
+        Ok(result)
+    }
+
     pub fn find_by_name(&self, name: &str) -> Result<Option<ProjectRow>, String> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, name, created_at, session_count FROM projects WHERE name = ?")
+            .prepare("SELECT id, name, project_root, created_at, session_count FROM projects WHERE name = ?")
             .map_err(|e| e.to_string())?;
 
         let result = stmt
@@ -43,13 +59,13 @@ impl<'a> ProjectsRepository<'a> {
         Ok(result)
     }
 
-    pub fn create(&self, name: &str) -> Result<ProjectRow, String> {
+    pub fn create(&self, name: &str, project_root: &str) -> Result<ProjectRow, String> {
         let created_at = chrono_now();
 
         self.conn
             .execute(
-                "INSERT INTO projects (name, created_at, session_count) VALUES (?, ?, 0)",
-                params![name, created_at],
+                "INSERT INTO projects (name, project_root, created_at, session_count) VALUES (?, ?, ?, 0)",
+                params![name, project_root, created_at],
             )
             .map_err(|e| e.to_string())?;
 
@@ -58,6 +74,7 @@ impl<'a> ProjectsRepository<'a> {
         Ok(ProjectRow {
             id,
             name: name.to_string(),
+            project_root: Some(project_root.to_string()),
             created_at,
             session_count: 0,
         })
@@ -73,11 +90,15 @@ impl<'a> ProjectsRepository<'a> {
         Ok(())
     }
 
-    pub fn get_or_create(&self, name: &str) -> Result<(ProjectRow, bool), String> {
+    pub fn get_or_create(
+        &self,
+        name: &str,
+        project_root: &str,
+    ) -> Result<(ProjectRow, bool), String> {
         if let Some(row) = self.find_by_name(name)? {
             Ok((row, false))
         } else {
-            let row = self.create(name)?;
+            let row = self.create(name, project_root)?;
             Ok((row, true))
         }
     }

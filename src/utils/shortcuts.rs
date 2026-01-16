@@ -25,4 +25,6 @@ pub enum Action {
     Cancel,
     /// Quit the application (Ctrl+Q, Ctrl+D)
     Quit,
+    /// Change model (Ctrl+M)
+    ChangeModel,
 }

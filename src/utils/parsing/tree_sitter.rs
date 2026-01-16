@@ -383,11 +383,11 @@ impl TreeSitterParser {
     }
 
     pub fn parse_file(&mut self, path: &str) -> Result<(Lang, Vec<ParsedObject>), String> {
-        let lang = Lang::from_path(path)
-            .ok_or_else(|| format!("Unsupported file extension: {}", path))?;
+        let lang =
+            Lang::from_path(path).ok_or_else(|| format!("Unsupported file extension: {}", path))?;
 
-        let source = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read file: {}", e))?;
+        let source =
+            std::fs::read_to_string(path).map_err(|e| format!("Failed to read file: {}", e))?;
 
         let objects = self.parse(&source, lang)?;
         Ok((lang, objects))

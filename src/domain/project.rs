@@ -1,4 +1,5 @@
 use crate::repository::ProjectRow;
+use std::path::{Path, PathBuf};
 
 /// Domain entity representing a project.
 /// A project groups related sessions together, typically scoped to a directory.
@@ -6,6 +7,7 @@ use crate::repository::ProjectRow;
 pub struct Project {
     id: i64,
     name: String,
+    project_root: PathBuf,
     created_at: u64,
     session_count: u64,
 }
@@ -17,6 +19,10 @@ impl Project {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub fn project_root(&self) -> &Path {
+        &self.project_root
     }
 
     pub fn created_at(&self) -> u64 {
@@ -33,6 +39,10 @@ impl From<ProjectRow> for Project {
         Self {
             id: row.id,
             name: row.name,
+            project_root: row
+                .project_root
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(".")),
             created_at: row.created_at.parse().unwrap_or(0),
             session_count: row.session_count as u64,
         }

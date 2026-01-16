@@ -1,25 +1,23 @@
-use crate::domain::workflow::{Workflow, Chain, CancellationToken, Error as WorkflowError};
 use super::session::Session;
-use crate::infrastructure::inference::InferenceEngine;
+use crate::domain::workflow::{CancellationToken, Chain, Error as WorkflowError, Workflow};
+use crate::infrastructure::InferenceEngine;
 use crate::repository::SessionRequestsRepository;
 use rusqlite::Connection;
+use std::sync::Arc;
 
 /// Service for running workflows on sessions
 pub struct SessionService {
     workflow: Workflow,
+    conn: Arc<Connection>,
 }
 
 impl SessionService {
     /// Create a new session service with default workflow
-    pub fn new() -> Self {
-        Self {
-            workflow: Workflow::new(),
-        }
-    }
-
-    /// Create a session service with a custom workflow
-    pub fn with_workflow(workflow: Workflow) -> Self {
-        Self { workflow }
+    pub fn new(engine: Arc<dyn InferenceEngine>, conn: Arc<Connection>) -> Result<Self, String> {
+        Ok(Self {
+            workflow: Workflow::new(engine)?,
+            conn,
+        })
     }
 
     /// Run the workflow for a new request in the given session
@@ -30,13 +28,12 @@ impl SessionService {
         &self,
         session: &Session,
         prompt: &str,
-        engine: &InferenceEngine,
         cancel: &CancellationToken,
-        conn: &Connection,
     ) -> Result<Chain, ServiceError> {
         // Create a new session request
-        let requests_repo = SessionRequestsRepository::new(conn);
-        let request_row = requests_repo.create(session.id(), prompt)
+        let requests_repo = SessionRequestsRepository::new(self.conn.clone());
+        let request_row = requests_repo
+            .create(session.id(), prompt)
             .map_err(|e| ServiceError::Repository(e))?;
         let request_id = request_row.id;
 
@@ -48,16 +45,18 @@ impl SessionService {
         session_with_request.set_current_request(prompt.to_string());
 
         // Run the workflow
-        let result = match self.workflow.run(&session_with_request, engine, cancel) {
+        let result = match self.workflow.run(&session_with_request, cancel) {
             Ok(chain) => {
                 // Get summary and log from chain
                 let summary = chain.get_summary();
                 let steps_log = chain.get_log();
 
                 // Update the request with result_summary and steps_log
-                requests_repo.update_result(request_id, &summary)
+                requests_repo
+                    .update_result(request_id, &summary)
                     .map_err(|e| ServiceError::Repository(e))?;
-                requests_repo.update_steps_log(request_id, &steps_log)
+                requests_repo
+                    .update_steps_log(request_id, &steps_log)
                     .map_err(|e| ServiceError::Repository(e))?;
 
                 Ok(chain)
@@ -66,15 +65,17 @@ impl SessionService {
                 // Create a chain with error
                 let mut chain = Chain::new();
                 chain.mark_failed(format!("Error: {}", e));
-                
+
                 let summary = chain.get_summary();
                 let steps_log = chain.get_log();
-                
-                requests_repo.update_result(request_id, &summary)
+
+                requests_repo
+                    .update_result(request_id, &summary)
                     .map_err(|e| ServiceError::Repository(e))?;
-                requests_repo.update_steps_log(request_id, &steps_log)
+                requests_repo
+                    .update_steps_log(request_id, &steps_log)
                     .map_err(|e| ServiceError::Repository(e))?;
-                
+
                 Err(ServiceError::Workflow(e))
             }
         };
@@ -89,10 +90,4 @@ pub enum ServiceError {
     Workflow(WorkflowError),
     #[error("repository error: {0}")]
     Repository(String),
-}
-
-impl Default for SessionService {
-    fn default() -> Self {
-        Self::new()
-    }
 }

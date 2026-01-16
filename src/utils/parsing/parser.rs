@@ -1,5 +1,5 @@
-use super::heuristics::{HeuristicParser, HeuristicObject};
-use super::tree_sitter::{TreeSitterParser, Lang, ParsedObject};
+use super::heuristics::{HeuristicObject, HeuristicParser};
+use super::tree_sitter::{Lang, ParsedObject, TreeSitterParser};
 
 #[derive(Debug, Clone)]
 pub struct ParseResult {

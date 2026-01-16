@@ -1,6 +1,6 @@
 mod service;
 
-pub use service::{StartupService, StartupConfig};
+pub use service::{StartupConfig, StartupService};
 
 use thiserror::Error;
 

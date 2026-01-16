@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::domain::tools::ToolResult;
+use serde::{Deserialize, Serialize};
 
 /// Types of steps that can occur in an execution chain
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

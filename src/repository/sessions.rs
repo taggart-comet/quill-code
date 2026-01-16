@@ -1,4 +1,4 @@
-use rusqlite::{Connection, params, Row};
+use rusqlite::{params, Connection, Row};
 
 /// Raw database row for sessions table
 #[derive(Debug, Clone)]

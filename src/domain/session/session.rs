@@ -1,5 +1,7 @@
-use super::session_request::SessionRequest;
+use super::{request::Request, session_request::SessionRequest};
+use crate::domain::Project;
 use crate::repository::SessionRow;
+use std::path::Path;
 
 /// Domain entity representing a conversation session.
 /// A session belongs to a project and contains a named conversation history.
@@ -7,6 +9,7 @@ use crate::repository::SessionRow;
 pub struct Session {
     id: i64,
     project_id: i64,
+    project: Project,
     name: String,
     created_at: u64,
     requests: Vec<SessionRequest>,
@@ -20,6 +23,10 @@ impl Session {
 
     pub fn project_id(&self) -> i64 {
         self.project_id
+    }
+
+    pub fn project(&self) -> &Project {
+        &self.project
     }
 
     pub fn name(&self) -> &str {
@@ -52,19 +59,20 @@ impl Session {
 
     pub fn load_with_requests(
         session_row: crate::repository::SessionRow,
-        requests: Vec<SessionRequest>
+        project: Project,
+        requests: Vec<SessionRequest>,
     ) -> Self {
-        let mut session = Self::from(session_row);
+        let mut session = Self::from_row_with_project(session_row, project);
         session.set_requests(requests);
         session
     }
-}
 
-impl From<SessionRow> for Session {
-    fn from(row: SessionRow) -> Self {
+    /// Create a Session from a SessionRow with a Project entity
+    pub fn from_row_with_project(row: SessionRow, project: Project) -> Self {
         Self {
             id: row.id,
             project_id: row.project_id,
+            project,
             name: row.name,
             created_at: row.created_at.parse().unwrap_or(0),
             requests: Vec::new(),
@@ -72,3 +80,20 @@ impl From<SessionRow> for Session {
         }
     }
 }
+
+impl Request for Session {
+    fn history(&self) -> &[SessionRequest] {
+        &self.requests
+    }
+
+    fn current_request(&self) -> &str {
+        &self.current_request
+    }
+
+    fn project_root(&self) -> &Path {
+        self.project.project_root()
+    }
+}
+
+// Note: From<SessionRow> is no longer implemented because Session requires a Project entity.
+// Use Session::from_row_with_project() instead.

@@ -1,7 +1,7 @@
-use super::{Error, Tool, ToolResult};
+use super::{Error, Tool, ToolInput, ToolResult};
+use crate::domain::session::Request;
 use crate::utils::{Lang, ObjectKind, ParsedObject, UniversalParser};
-use serde::{Deserialize, Serialize};
-use serde_yaml::Value as Yaml;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 
@@ -46,22 +46,10 @@ impl ObjectQuery {
     }
 }
 
-#[derive(Deserialize)]
-struct ReadObjectsInput {
-    full_path_to_file: String,
-    queries: Vec<QueryInput>,
-}
-
-#[derive(Deserialize)]
-struct QueryInput {
-    #[serde(default)]
-    kind: Option<String>,
-    name: String,
-}
-
 #[derive(Serialize)]
 struct ReadObjectsOutput {
     language: String,
+    object_not_found: bool,
     results: HashMap<String, ObjectContent>,
 }
 
@@ -75,12 +63,11 @@ impl ReadObjects {
         file_path: &str,
         queries: &[ObjectQuery],
     ) -> Result<(Lang, HashMap<String, ObjectContent>), Error> {
-        let source_code =
-            fs::read_to_string(file_path).map_err(|e| Error::Io(format!("failed to read file: {}", e)))?;
+        let source_code = fs::read_to_string(file_path)
+            .map_err(|e| Error::Io(format!("failed to read file: {}", e)))?;
 
         let mut parser = UniversalParser::new();
-        let (lang, objects) = parser.parse_file(file_path)
-            .map_err(Error::Parse)?;
+        let (lang, objects) = parser.parse_file(file_path).map_err(Error::Parse)?;
 
         let lines: Vec<&str> = source_code.lines().collect();
         let mut results = HashMap::new();
@@ -111,30 +98,54 @@ impl ReadObjects {
         }
     }
 
-    fn parse_input(input: Yaml) -> Result<ReadObjectsInput, Error> {
-        let parsed: ReadObjectsInput =
-            serde_yaml::from_value(input).map_err(|e| Error::InvalidYaml(e.to_string()))?;
+    fn parse_input(input: &ToolInput) -> Result<(String, Vec<ObjectQuery>), Error> {
+        let full_path_to_file = input
+            .require_text("full_path_to_file")
+            .map_err(|e| Error::Parse(e))?;
 
-        if parsed.queries.is_empty() {
+        // Parse queries - they should be in <queries><query>...</query></queries>
+        let query_elements = input.get_elements("query");
+        if query_elements.is_empty() {
             return Err(Error::Parse("at least one query is required".into()));
         }
 
-        Ok(parsed)
+        let mut queries = Vec::new();
+        for query_elem in query_elements {
+            let name = query_elem
+                .get_text("name")
+                .ok_or_else(|| Error::Parse("query must have a name".into()))?;
+            let kind_str = query_elem.get_text("kind");
+
+            let query = match kind_str {
+                Some(kind) => ObjectQuery {
+                    kind: ObjectKind::from_str(&kind),
+                    name,
+                },
+                None => ObjectQuery::new(&name),
+            };
+            queries.push(query);
+        }
+
+        Ok((full_path_to_file, queries))
     }
 
     fn format_output(lang: Lang, results: HashMap<String, ObjectContent>) -> String {
-        let output = ReadObjectsOutput {
-            language: lang.name().to_string(),
-            results,
-        };
-        serde_yaml::to_string(&output).unwrap_or_else(|e| format!("error: {}", e))
-    }
+        // Format as simple text output instead of YAML
+        if results.is_empty() {
+            return format!("Language: {}\nNo objects found.", lang.name());
+        }
 
-    fn format_error(error: impl Into<String>) -> String {
-        serde_yaml::to_string(&ErrorOutput {
-            error: error.into(),
-        })
-        .unwrap_or_else(|e| format!("error: {}", e))
+        let mut output = format!("Language: {}\nObjects found:\n", lang.name());
+        for (name, content) in results {
+            output.push_str(&format!("\n{} ({}):\n", name, content.kind));
+            output.push_str(&format!(
+                "Lines {}-{}:\n",
+                content.line_start, content.line_end
+            ));
+            output.push_str(&content.content);
+            output.push_str("\n");
+        }
+        output
     }
 }
 
@@ -143,44 +154,37 @@ impl Tool for ReadObjects {
         "read_objects"
     }
 
-    fn work(&self, input: Yaml) -> ToolResult {
-        let input_copy = input.clone();
-        
+    fn work(&self, input: &ToolInput, _request: &dyn Request) -> ToolResult {
         match Self::parse_input(input) {
-            Ok(parsed) => {
-                let queries: Vec<ObjectQuery> = parsed
-                    .queries
-                    .into_iter()
-                    .map(|q| match q.kind {
-                        Some(kind_str) => ObjectQuery {
-                            kind: ObjectKind::from_str(&kind_str),
-                            name: q.name,
-                        },
-                        None => ObjectQuery::new(&q.name),
-                    })
-                    .collect();
-
-                match Self::read_objects(&parsed.full_path_to_file, &queries) {
-                    Ok((lang, results)) => ToolResult::ok(self.name(), input_copy, Yaml::String(Self::format_output(lang, results))),
-                    Err(e) => ToolResult::error(self.name(), input_copy, e.to_string()),
+            Ok((full_path_to_file, queries)) => {
+                match Self::read_objects(&full_path_to_file, &queries) {
+                    Ok((lang, results)) => {
+                        ToolResult::ok(self.name(), input, Self::format_output(lang, results))
+                    }
+                    Err(e) => ToolResult::error(self.name(), input, e.to_string()),
                 }
             }
-            Err(e) => ToolResult::error(self.name(), input_copy, e.to_string()),
+            Err(e) => ToolResult::error(self.name(), input, e.to_string()),
         }
     }
 
-    fn desc(&self) -> &'static str {
-        "Shows code for requested objects in a source file. Supports: Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, Ruby, and more."
-    }
+    fn spec(&self) -> String {
+        format!(
+            r#"Use the `{}` tool to read source code of specific objects from a file. Fill the input format precisely:
 
-    fn input_format(&self) -> &'static str {
-        "
-input:
-  full_path_to_file: string
-  queries:
-    - name: string
-      kind: string
-"
+<tool_name>{}</tool_name>
+<input>
+  <full_path_to_file>string</full_path_to_file>  # path to the source file
+  <queries>
+    <query>
+      <name>string</name>           # object name to find
+      <kind>string</kind>           # optional: function, class, struct, etc.
+    </query>
+  </queries>
+</input>"#,
+            self.name(),
+            self.name()
+        )
     }
 }
 
@@ -262,23 +266,31 @@ class MyClass:
 
     #[test]
     fn test_parse_input() {
-        let input = r#"
-full_path_to_file: /path/to/file.rs
-queries:
-  - name: main
-    kind: function
-  - name: Config
-    kind: struct
-  - name: Parser
-"#;
-        let yaml: Yaml = serde_yaml::from_str(input).unwrap();
-        let parsed = ReadObjects::parse_input(yaml).unwrap();
+        use crate::domain::tools::ToolInput;
+        let input_xml = r#"<input>
+  <full_path_to_file>/path/to/file.rs</full_path_to_file>
+  <queries>
+    <query>
+      <name>main</name>
+      <kind>function</kind>
+    </query>
+    <query>
+      <name>Config</name>
+      <kind>struct</kind>
+    </query>
+    <query>
+      <name>Parser</name>
+    </query>
+  </queries>
+</input>"#;
+        let input = ToolInput::new(input_xml).unwrap();
+        let (file_path, queries) = ReadObjects::parse_input(&input).unwrap();
 
-        assert_eq!(parsed.full_path_to_file, "/path/to/file.rs");
-        assert_eq!(parsed.queries.len(), 3);
-        assert_eq!(parsed.queries[0].kind, Some("function".to_string()));
-        assert_eq!(parsed.queries[1].kind, Some("struct".to_string()));
-        assert_eq!(parsed.queries[2].kind, None);
+        assert_eq!(file_path, "/path/to/file.rs");
+        assert_eq!(queries.len(), 3);
+        assert_eq!(queries[0].name, "main");
+        assert_eq!(queries[1].name, "Config");
+        assert_eq!(queries[2].name, "Parser");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
 pub struct MetaRepository<'a> {
     conn: &'a Connection,
@@ -38,6 +38,29 @@ impl<'a> MetaRepository<'a> {
             .ok_or_else(|| "schema_version not found".to_string())?
             .parse()
             .map_err(|e: std::num::ParseIntError| e.to_string())
+    }
+
+    pub fn get_last_used_model_id(&self) -> Result<Option<i64>, String> {
+        match self.get("last_used_model_id")? {
+            Some(value) => {
+                let id = value
+                    .parse()
+                    .map_err(|e: std::num::ParseIntError| e.to_string())?;
+                Ok(Some(id))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn set_last_used_model_id(&self, model_id: i64) -> Result<(), String> {
+        self.set("last_used_model_id", &model_id.to_string())
+    }
+
+    pub fn clear_last_used_model_id(&self) -> Result<(), String> {
+        self.conn
+            .execute("DELETE FROM meta WHERE key = 'last_used_model_id'", [])
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 }
 

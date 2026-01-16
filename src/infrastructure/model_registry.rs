@@ -68,7 +68,10 @@ fn prompt_user_selection(models: &[PathBuf]) -> io::Result<PathBuf> {
                 return Ok(models[n - 1].clone());
             }
             _ => {
-                println!("Invalid selection. Please enter a number between 1 and {}.", models.len());
+                println!(
+                    "Invalid selection. Please enter a number between 1 and {}.",
+                    models.len()
+                );
             }
         }
     }

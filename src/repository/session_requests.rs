@@ -1,4 +1,5 @@
-use rusqlite::{Connection, params, Row};
+use rusqlite::{params, Connection, Row};
+use std::sync::Arc;
 
 /// Raw database row for session_requests table
 #[derive(Debug, Clone)]
@@ -24,12 +25,12 @@ impl SessionRequestRow {
     }
 }
 
-pub struct SessionRequestsRepository<'a> {
-    conn: &'a Connection,
+pub struct SessionRequestsRepository {
+    conn: Arc<Connection>,
 }
 
-impl<'a> SessionRequestsRepository<'a> {
-    pub fn new(conn: &'a Connection) -> Self {
+impl SessionRequestsRepository {
+    pub fn new(conn: Arc<Connection>) -> Self {
         Self { conn }
     }
 
@@ -115,7 +116,10 @@ impl<'a> SessionRequestsRepository<'a> {
     }
 
     /// Get the latest request for a session (most recent)
-    pub fn find_latest_by_session(&self, session_id: i64) -> Result<Option<SessionRequestRow>, String> {
+    pub fn find_latest_by_session(
+        &self,
+        session_id: i64,
+    ) -> Result<Option<SessionRequestRow>, String> {
         let mut stmt = self
             .conn
             .prepare("SELECT id, session_id, prompt, result_summary, steps_log, created_at FROM session_requests WHERE session_id = ? ORDER BY created_at DESC LIMIT 1")
@@ -133,7 +137,10 @@ impl<'a> SessionRequestsRepository<'a> {
     pub fn delete_by_session(&self, session_id: i64) -> Result<usize, String> {
         let affected = self
             .conn
-            .execute("DELETE FROM session_requests WHERE session_id = ?", params![session_id])
+            .execute(
+                "DELETE FROM session_requests WHERE session_id = ?",
+                params![session_id],
+            )
             .map_err(|e| e.to_string())?;
 
         Ok(affected)
@@ -169,9 +176,9 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
 
-    fn setup_test_db() -> Connection {
+    fn setup_test_db() -> Arc<Connection> {
         let conn = Connection::open_in_memory().unwrap();
-        
+
         // Create the tables
         conn.execute_batch(
             "CREATE TABLE sessions (
@@ -189,8 +196,9 @@ mod tests {
                 steps_log TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (session_id) REFERENCES sessions(id)
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
 
         // Insert a test session
         conn.execute(
@@ -198,13 +206,13 @@ mod tests {
             []
         ).unwrap();
 
-        conn
+        Arc::new(conn)
     }
 
     #[test]
     fn test_create_request() {
         let conn = setup_test_db();
-        let repo = SessionRequestsRepository::new(&conn);
+        let repo = SessionRequestsRepository::new(conn);
 
         let request = repo.create(1, "Test prompt").unwrap();
         assert_eq!(request.session_id, 1);
@@ -215,7 +223,7 @@ mod tests {
     #[test]
     fn test_update_result() {
         let conn = setup_test_db();
-        let repo = SessionRequestsRepository::new(&conn);
+        let repo = SessionRequestsRepository::new(conn);
 
         let request = repo.create(1, "Test prompt").unwrap();
         repo.update_result(request.id, "Test result").unwrap();
@@ -227,7 +235,7 @@ mod tests {
     #[test]
     fn test_find_by_session() {
         let conn = setup_test_db();
-        let repo = SessionRequestsRepository::new(&conn);
+        let repo = SessionRequestsRepository::new(conn);
 
         repo.create(1, "First prompt").unwrap();
         repo.create(1, "Second prompt").unwrap();

@@ -1,11 +1,33 @@
 use crate::domain::session::Request;
-use crate::domain::tools::{Tool, ToolInput, ToolResult};
+use crate::domain::tools::{Error, Tool, ToolResult};
 use crate::utils::{Lang, ParsedObject, UniversalParser};
+use serde::Deserialize;
+use serde_json::json;
 use std::collections::BTreeMap;
+use std::sync::Mutex;
 
-pub struct DiscoverObjects;
+pub struct DiscoverObjects {
+    input: Mutex<Option<DiscoverObjectsInput>>,
+}
+
+#[derive(Debug, Clone)]
+struct DiscoverObjectsInput {
+    raw: String,
+    full_path_to_file: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DiscoverObjectsInputJson {
+    full_path_to_file: String,
+}
 
 impl DiscoverObjects {
+    pub fn new() -> Self {
+        Self {
+            input: Mutex::new(None),
+        }
+    }
+
     pub fn parse_file(file_path: &str) -> Result<(Lang, Vec<ParsedObject>), String> {
         let mut parser = UniversalParser::new();
         parser.parse_file(file_path)
@@ -41,6 +63,26 @@ impl DiscoverObjects {
 
         output
     }
+
+    fn parse_input_json(raw: &str) -> Result<DiscoverObjectsInput, Error> {
+        let parsed: DiscoverObjectsInputJson =
+            serde_json::from_str(raw).map_err(|e| Error::Parse(e.to_string()))?;
+        if parsed.full_path_to_file.is_empty() {
+            return Err(Error::Parse("full_path_to_file is required".into()));
+        }
+        Ok(DiscoverObjectsInput {
+            raw: raw.to_string(),
+            full_path_to_file: parsed.full_path_to_file,
+        })
+    }
+
+    fn load_input(&self) -> Result<DiscoverObjectsInput, Error> {
+        self.input
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| Error::Parse("input not parsed".into()))
+    }
 }
 
 impl Tool for DiscoverObjects {
@@ -48,39 +90,69 @@ impl Tool for DiscoverObjects {
         "discover_objects"
     }
 
-    fn work(&self, input: &ToolInput, _request: &dyn Request) -> ToolResult {
-        let full_path_to_file = match input.require_text("full_path_to_file") {
-            Ok(path) => path,
-            Err(e) => return ToolResult::error(self.name(), input, e),
-        };
+    fn parse_input(&self, input: String) -> Option<Error> {
+        let trimmed = input.trim();
+        let parsed = Self::parse_input_json(trimmed);
 
-        if full_path_to_file.is_empty() {
-            return ToolResult::error(
-                self.name(),
-                input,
-                "full_path_to_file is required".to_string(),
-            );
-        }
-
-        match Self::parse_file(&full_path_to_file) {
-            Ok((lang, objects)) => {
-                ToolResult::ok(self.name(), input, Self::format_output(lang, &objects))
+        match parsed {
+            Ok(parsed) => {
+                *self.input.lock().unwrap() = Some(parsed);
+                None
             }
-            Err(e) => ToolResult::error(self.name(), input, e.to_string()),
+            Err(err) => Some(err),
         }
     }
 
-    fn spec(&self) -> String {
-        format!(
-            r#"Use the `{}` tool to discover functions, classes, structs in a source file. Fill the input format precisely:
+    fn work(&self, _request: &dyn Request) -> ToolResult {
+        let input = match self.load_input() {
+            Ok(input) => input,
+            Err(e) => {
+                return ToolResult::error(
+                    self.name().to_string(),
+                    String::new(),
+                    e.to_string(),
+                )
+            }
+        };
 
-<tool_name>{}</tool_name>
-<input>
-  <full_path_to_file>string</full_path_to_file>  # path to the source file
-</input>"#,
-            self.name(),
+        match Self::parse_file(&input.full_path_to_file) {
+            Ok((lang, objects)) => {
+                ToolResult::ok(
+                    self.name().to_string(),
+                    input.raw,
+                    Self::format_output(lang, &objects),
+                )
+            }
+            Err(e) => ToolResult::error(self.name().to_string(), input.raw, e.to_string()),
+        }
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "full_path_to_file": {
+                    "type": "string",
+                    "description": "path to the source file"
+                }
+            },
+            "required": ["full_path_to_file"],
+            "additionalProperties": false
+        })
+    }
+
+    fn desc(&self) -> String {
+        format!(
+            "Use the `{}` tool to discover functions, classes, structs in a source file.",
             self.name()
         )
+    }
+
+}
+
+impl Default for DiscoverObjects {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

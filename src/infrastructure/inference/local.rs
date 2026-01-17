@@ -10,8 +10,9 @@ use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 
-use super::InferenceEngine;
+use super::{InferenceEngine, LLMInferenceResult};
 use crate::domain::ModelType;
+use crate::infrastructure::InfaError;
 use crate::infrastructure::model_registry;
 
 pub struct LocalParams {
@@ -101,9 +102,20 @@ impl LocalEngine {
 }
 
 impl InferenceEngine for LocalEngine {
-    fn generate(&self, prompt: &str, max_tokens: u32) -> Result<String, String> {
+    fn generate(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        max_tokens: u32,
+        _tools: &[&dyn crate::domain::tools::Tool],
+        _chain: &crate::domain::workflow::Chain,
+    ) -> Result<LLMInferenceResult, InfaError> {
+        let prompt = format!("{}\n\n{}", system_prompt, user_prompt);
+        let to_error = |msg: String| -> InfaError {
+            std::io::Error::new(std::io::ErrorKind::Other, msg).into()
+        };
         let backend =
-            LlamaBackend::init().map_err(|e| format!("Failed to initialize backend: {}", e))?;
+            LlamaBackend::init().map_err(|e| to_error(format!("Failed to initialize backend: {}", e)))?;
 
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(self.params.ctx_size))
@@ -113,15 +125,15 @@ impl InferenceEngine for LocalEngine {
         let mut ctx = self
             .model
             .new_context(&backend, ctx_params)
-            .map_err(|e| format!("Failed to create context: {}", e))?;
+            .map_err(|e| to_error(format!("Failed to create context: {}", e)))?;
 
         let tokens = self
             .model
-            .str_to_token(prompt, AddBos::Always)
-            .map_err(|e| format!("Failed to tokenize: {}", e))?;
+            .str_to_token(&prompt, AddBos::Always)
+            .map_err(|e| to_error(format!("Failed to tokenize: {}", e)))?;
 
         if tokens.is_empty() {
-            return Err("Empty prompt".to_string());
+            return Err(to_error("Empty prompt".to_string()));
         }
 
         let mut batch = LlamaBatch::new(self.params.ctx_size as usize, 1);
@@ -129,11 +141,11 @@ impl InferenceEngine for LocalEngine {
             let is_last = i == tokens.len() - 1;
             batch
                 .add(*token, i as i32, &[0], is_last)
-                .map_err(|_| "Failed to add token to batch")?;
+                .map_err(|_| to_error("Failed to add token to batch".to_string()))?;
         }
 
         ctx.decode(&mut batch)
-            .map_err(|e| format!("Initial decode failed: {}", e))?;
+            .map_err(|e| to_error(format!("Initial decode failed: {}", e)))?;
 
         let mut sampler = LlamaSampler::chain_simple([
             LlamaSampler::temp(self.params.temperature),
@@ -154,21 +166,24 @@ impl InferenceEngine for LocalEngine {
             let token_str = self
                 .model
                 .token_to_str(new_token, Special::Tokenize)
-                .map_err(|e| format!("Token decode error: {}", e))?;
+                .map_err(|e| to_error(format!("Token decode error: {}", e)))?;
             output.push_str(&token_str);
 
             batch.clear();
             batch
                 .add(new_token, n_cur as i32, &[0], true)
-                .map_err(|_| "Failed to add token")?;
+                .map_err(|_| to_error("Failed to add token".to_string()))?;
 
             ctx.decode(&mut batch)
-                .map_err(|e| format!("Decode failed: {}", e))?;
+                .map_err(|e| to_error(format!("Decode failed: {}", e)))?;
 
             n_cur += 1;
         }
 
-        Ok(output.trim().to_string())
+        Ok(LLMInferenceResult {
+            summary: output.trim().to_string(),
+            chosen_tool: None,
+        })
     }
 
     fn get_type(&self) -> ModelType {

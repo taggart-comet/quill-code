@@ -1,5 +1,6 @@
 use super::Error;
 use crate::domain::prompting::session_naming_prompt;
+use crate::domain::workflow::Chain;
 use crate::domain::{Project, Session, SessionRequest};
 use crate::infrastructure::inference::InferenceEngine;
 use crate::repository::{ProjectsRepository, SessionRequestsRepository, SessionsRepository};
@@ -101,11 +102,17 @@ impl StartupService {
         let prompt_preview: String = first_prompt.chars().take(100).collect();
         let naming_prompt = session_naming_prompt(self.engine.get_type(), &prompt_preview);
 
-        let session_name = match self.engine.generate(&naming_prompt, 15) {
+        let system_prompt = crate::domain::prompting::get_system_prompt(self.engine.get_type());
+        let chain = Chain::new();
+        let session_name = match self
+            .engine
+            .generate(&system_prompt, &naming_prompt, 15, &[], &chain)
+        {
             Ok(raw) => {
-                log::debug!("Raw session name response: {:?}", raw);
+                log::debug!("Raw session name response: {:?}", raw.summary);
                 // Clean up the response
                 let cleaned = raw
+                    .summary
                     .lines()
                     .next()
                     .unwrap_or("")

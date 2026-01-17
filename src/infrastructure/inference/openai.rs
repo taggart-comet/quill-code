@@ -1,6 +1,7 @@
-use super::InferenceEngine;
+use super::{InferenceEngine, LLMInferenceResult};
 use crate::domain::ModelType;
 use crate::infrastructure::api_clients::openai::OpenAIClient;
+use crate::infrastructure::InfaError;
 use openai_api_rust::completions::*;
 use openai_api_rust::models::ModelsApi;
 use openai_api_rust::*;
@@ -68,11 +69,15 @@ impl OpenAIEngine {
 }
 
 impl InferenceEngine for OpenAIEngine {
-    fn generate(&self, prompt: &str, _max_tokens: u32) -> Result<String, String> {
-        match self.generate_with_responses_api(prompt) {
-            Ok(result) => Ok(result),
-            Err(e) => Err(e),
-        }
+    fn generate(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        _max_tokens: u32,
+        tools: &[&dyn crate::domain::tools::Tool],
+        chain: &crate::domain::workflow::Chain,
+    ) -> Result<LLMInferenceResult, InfaError> {
+        self.generate_with_responses_api(system_prompt, user_prompt, tools, chain)
     }
     fn get_type(&self) -> ModelType {
         ModelType::OpenAI
@@ -81,9 +86,15 @@ impl InferenceEngine for OpenAIEngine {
 
 impl OpenAIEngine {
     /// Generate using the Responses API (for newer models like codex, o-series)
-    fn generate_with_responses_api(&self, prompt: &str) -> Result<String, String> {
+    fn generate_with_responses_api(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        tools: &[&dyn crate::domain::tools::Tool],
+        chain: &crate::domain::workflow::Chain,
+    ) -> Result<LLMInferenceResult, InfaError> {
         self.responses_client
-            .call_responses_api(prompt)
-            .map_err(|e| format!("OpenAI API error: {}", e))
+            .call_responses_api(system_prompt, user_prompt, tools, chain)
+            .map_err(|e| e)
     }
 }

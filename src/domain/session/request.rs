@@ -13,6 +13,9 @@ pub trait Request {
 
     /// Get the project root path
     fn project_root(&self) -> &Path;
+
+    /// Store a final message produced by the workflow
+    fn set_final_message(&mut self, message: String);
 }
 
 /// A virtual request implementation that can be created without a full Session entity.
@@ -21,6 +24,7 @@ pub struct VirtualRequest {
     prompt: String,
     project_root: PathBuf,
     history: Vec<SessionRequest>,
+    final_message: Option<String>,
 }
 
 impl VirtualRequest {
@@ -31,6 +35,7 @@ impl VirtualRequest {
             prompt: prompt.into(),
             project_root: project_root.into(),
             history: Vec::new(),
+            final_message: None,
         }
     }
 }
@@ -46,5 +51,9 @@ impl Request for VirtualRequest {
 
     fn project_root(&self) -> &Path {
         &self.project_root
+    }
+
+    fn set_final_message(&mut self, message: String) {
+        self.final_message = Some(message);
     }
 }

@@ -11,26 +11,23 @@ impl GeneralToolset {
     pub fn new() -> Self {
         let mut tools: HashMap<String, Box<dyn Tool>> = HashMap::new();
 
-        let discover_objects = Box::new(DiscoverObjects);
+        let discover_objects = Box::new(DiscoverObjects::new());
         tools.insert(discover_objects.name().to_string(), discover_objects);
 
-        let read_objects = Box::new(ReadObjects);
+        let read_objects = Box::new(ReadObjects::new());
         tools.insert(read_objects.name().to_string(), read_objects);
 
-        let find_files = Box::new(FindFiles);
+        let find_files = Box::new(FindFiles::new());
         tools.insert(find_files.name().to_string(), find_files);
 
-        let structure = Box::new(Structure);
+        let structure = Box::new(Structure::new());
         tools.insert(structure.name().to_string(), structure);
 
-        let patch_file = Box::new(PatchFile);
+        let patch_file = Box::new(PatchFile::new());
         tools.insert(patch_file.name().to_string(), patch_file);
 
-        let shell_exec = Box::new(crate::domain::tools::ShellExec);
+        let shell_exec = Box::new(crate::domain::tools::ShellExec::new());
         tools.insert(shell_exec.name().to_string(), shell_exec);
-
-        let finish = Box::new(crate::domain::tools::Finish);
-        tools.insert(finish.name().to_string(), finish);
 
         Self { tools }
     }

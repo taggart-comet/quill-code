@@ -14,6 +14,7 @@ pub struct Session {
     created_at: u64,
     requests: Vec<SessionRequest>,
     current_request: String,
+    final_message: Option<String>,
 }
 
 impl Session {
@@ -77,6 +78,7 @@ impl Session {
             created_at: row.created_at.parse().unwrap_or(0),
             requests: Vec::new(),
             current_request: String::new(),
+            final_message: None,
         }
     }
 }
@@ -92,6 +94,10 @@ impl Request for Session {
 
     fn project_root(&self) -> &Path {
         self.project.project_root()
+    }
+
+    fn set_final_message(&mut self, message: String) {
+        self.final_message = Some(message);
     }
 }
 

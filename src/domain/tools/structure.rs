@@ -1,12 +1,36 @@
 use crate::domain::session::Request;
-use crate::domain::tools::{Tool, ToolInput, ToolResult};
+use crate::domain::tools::{Error, Tool, ToolResult};
 use crate::utils::paths::is_within_root;
+use serde::Deserialize;
+use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use termtree::Tree;
 
-pub struct Structure;
+pub struct Structure {
+    input: Mutex<Option<StructureInput>>,
+}
+
+#[derive(Debug, Clone)]
+struct StructureInput {
+    raw: String,
+    path: String,
+    max_depth: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct StructureInputJson {
+    path: Option<String>,
+    max_depth: Option<usize>,
+}
 
 impl Structure {
+    pub fn new() -> Self {
+        Self {
+            input: Mutex::new(None),
+        }
+    }
+
     /// Resolve the target path, defaulting to project_root if "." or empty
     fn resolve_path(input_path: &str, project_root: &Path) -> Result<PathBuf, String> {
         let path = if input_path.is_empty() || input_path == "." {
@@ -94,6 +118,25 @@ impl Structure {
 
         tree
     }
+
+    fn parse_input_json(raw: &str) -> Result<StructureInput, Error> {
+        let parsed: StructureInputJson =
+            serde_json::from_str(raw).map_err(|e| Error::Parse(e.to_string()))?;
+
+        Ok(StructureInput {
+            raw: raw.to_string(),
+            path: parsed.path.unwrap_or_else(|| ".".to_string()),
+            max_depth: parsed.max_depth.unwrap_or(3),
+        })
+    }
+
+    fn load_input(&self) -> Result<StructureInput, Error> {
+        self.input
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| Error::Parse("input not parsed".into()))
+    }
 }
 
 impl Tool for Structure {
@@ -101,48 +144,87 @@ impl Tool for Structure {
         "structure"
     }
 
-    fn work(&self, input: &ToolInput, request: &dyn Request) -> ToolResult {
-        let path = input.get_text("path").unwrap_or_else(|| ".".to_string());
-        let max_depth = input.get_int("max_depth").map(|n| n as usize).unwrap_or(3);
+    fn parse_input(&self, input: String) -> Option<Error> {
+        let trimmed = input.trim();
+        let parsed = Self::parse_input_json(trimmed);
 
-        let target_path = match Self::resolve_path(&path, request.project_root()) {
+        match parsed {
+            Ok(parsed) => {
+                *self.input.lock().unwrap() = Some(parsed);
+                None
+            }
+            Err(err) => Some(err),
+        }
+    }
+
+    fn work(&self, request: &dyn Request) -> ToolResult {
+        let input = match self.load_input() {
+            Ok(input) => input,
+            Err(e) => {
+                return ToolResult::error(
+                    self.name().to_string(),
+                    String::new(),
+                    e.to_string(),
+                )
+            }
+        };
+
+        let target_path = match Self::resolve_path(&input.path, request.project_root()) {
             Ok(p) => p,
-            Err(e) => return ToolResult::error(self.name(), input, e),
+            Err(e) => return ToolResult::error(self.name().to_string(), input.raw, e),
         };
 
         if !target_path.exists() {
             return ToolResult::error(
-                self.name(),
-                input,
+                self.name().to_string(),
+                input.raw,
                 format!("Path does not exist: {}", target_path.display()),
             );
         }
 
         if !target_path.is_dir() {
             return ToolResult::error(
-                self.name(),
-                input,
+                self.name().to_string(),
+                input.raw,
                 format!("Path is not a directory: {}", target_path.display()),
             );
         }
 
-        let tree = Self::build_tree(&target_path, max_depth);
+        let tree = Self::build_tree(&target_path, input.max_depth);
 
-        ToolResult::ok(self.name(), input, tree)
+        ToolResult::ok(self.name().to_string(), input.raw, tree)
     }
 
-    fn spec(&self) -> String {
-        format!(
-            r#"Use the `{}` tool to get directory structure. Fill the input format precisely:
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "directory path to explore (use . for project root)"
+                },
+                "max_depth": {
+                    "type": "number",
+                    "description": "optional; how deep to traverse (default: 3)"
+                }
+            },
+            "required": [],
+            "additionalProperties": false
+        })
+    }
 
-<tool_name>{}</tool_name>
-<input>
-  <path>string</path>       # directory path to explore (use "." for project root)
-  <max_depth>integer</max_depth> # optional; how deep to traverse (default: 3)
-</input>"#,
-            self.name(),
+    fn desc(&self) -> String {
+        format!(
+            "Use the `{}` tool to get directory structure.",
             self.name()
         )
+    }
+
+}
+
+impl Default for Structure {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

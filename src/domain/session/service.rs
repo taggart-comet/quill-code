@@ -45,7 +45,7 @@ impl SessionService {
         session_with_request.set_current_request(prompt.to_string());
 
         // Run the workflow
-        let result = match self.workflow.run(&session_with_request, cancel) {
+        let result = match self.workflow.run(&mut session_with_request, cancel) {
             Ok(chain) => {
                 // Get summary and log from chain
                 let summary = chain.get_summary();

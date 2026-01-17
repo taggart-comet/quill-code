@@ -152,8 +152,8 @@ fn repl(infra: InfrastructureComponents, debug: bool) -> Result<(), String> {
                 // Run the session service (creates request, runs workflow, updates result)
                 match session_service.run(session, trimmed, &cancel_token) {
                     Ok(chain) => {
-                        let finish_message = chain.get_finish_message();
-                        println!("Ok> {}", finish_message);
+                        println!("Ok> {}", chain.get_summary());
+                        println!("{}", chain.final_message().unwrap().to_string());
                     }
                     Err(domain::session::ServiceError::Workflow(
                         domain::workflow::Error::Cancelled,

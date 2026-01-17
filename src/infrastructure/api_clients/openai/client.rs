@@ -1,4 +1,6 @@
-use super::dto::{ResponseDTO, RequestDTO};
+use super::dto::ResponseDTO;
+use super::translator::{build_llm_result, build_request_dto};
+use crate::infrastructure::inference::LLMInferenceResult;
 use std::error::Error;
 
 #[derive(Debug)]
@@ -56,9 +58,15 @@ impl OpenAIClient {
         }
     }
 
-    pub fn call_responses_api(&self, prompt: &str) -> Result<String, Box<dyn Error>> {
+    pub fn call_responses_api(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        tools: &[&dyn crate::domain::tools::Tool],
+        chain: &crate::domain::workflow::Chain,
+    ) -> Result<LLMInferenceResult, Box<dyn Error + Send + Sync>> {
         // Try once, retry on transient errors
-        match self.call_responses_api_inner(prompt) {
+        match self.call_responses_api_inner(system_prompt, user_prompt, tools, chain) {
             Ok(result) => Ok(result),
             Err(e) => {
                 // Check if it's a transient error worth retrying
@@ -69,7 +77,7 @@ impl OpenAIClient {
                 {
                     log::warn!("OpenAI API request failed, retrying once: {}", error_str);
                     std::thread::sleep(std::time::Duration::from_secs(2));
-                    self.call_responses_api_inner(prompt)
+                    self.call_responses_api_inner(system_prompt, user_prompt, tools, chain)
                 } else {
                     Err(e)
                 }
@@ -77,24 +85,16 @@ impl OpenAIClient {
         }
     }
 
-    fn call_responses_api_inner(&self, prompt: &str) -> Result<String, Box<dyn Error>> {
+    fn call_responses_api_inner(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        tools: &[&dyn crate::domain::tools::Tool],
+        chain: &crate::domain::workflow::Chain,
+    ) -> Result<LLMInferenceResult, Box<dyn Error + Send + Sync>> {
         let url = "https://api.openai.com/v1/responses";
 
-        let request_body = RequestDTO {
-            model: self.model.clone(),
-            instructions: String::new(),
-            input: vec![InputDto {
-                content: prompt.to_string(),
-            }],
-            tools: vec![],
-            tool_choice: "auto".to_string(),
-            parallel_tool_calls: true,
-            reasoning: ReasoningConfig {
-                summary: "auto".to_string(),
-            },
-            store: false,
-            stream: false,
-        };
+        let request_body = build_request_dto(&self.model, system_prompt, user_prompt, tools, chain);
 
         let response = self
             .client
@@ -115,8 +115,8 @@ impl OpenAIClient {
             Err(e) => return Err(Box::new(OpenAIClientError::Deserialize { source: e, body })),
         };
 
-        let result = dto.extract_text();
-        if result.is_empty() {
+        let result = build_llm_result(dto);
+        if result.summary.is_empty() && result.chosen_tool.is_none() {
             return Err(Box::new(OpenAIClientError::NoText { body }));
         }
         Ok(result)

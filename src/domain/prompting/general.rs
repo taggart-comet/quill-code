@@ -9,13 +9,22 @@ use crate::domain::ModelType;
 /// This module contains all prompt templates used for LLM interactions.
 
 /// Create a prompt for the LLM to choose the next tool
-pub fn main_request_prompt(
+pub fn get_full_request_prompt(
     model_type: ModelType,
     request: &dyn Request,
     toolset: &dyn Toolset,
     chain: &Chain,
 ) -> String {
-    let user_prompt = prompting::format_session_prompt(model_type, request);
+    let user_prompt = prompting::get_user_prompt(model_type, request);
+    let tool_results = if chain.get_log().is_empty() {
+        "None.".to_string()
+    } else {
+        chain.get_log()
+    };
+    let user_prompt = format!(
+        "{}\n\nPREVIOUS_TOOL_RESULTS:\n{}",
+        user_prompt, tool_results
+    );
 
     if model_type == ModelType::OpenAI {
         format!(
@@ -53,6 +62,38 @@ OUTPUT (XML ONLY):\n",
             _format_chain_context(chain),
         )
     }
+}
+
+pub fn get_system_prompt(model_type: ModelType) -> String {
+    let (os_name, shell_name) = get_runtime_environment();
+    if model_type == ModelType::OpenAI {
+        format!(
+            "You are Drastis, a coding agent. \
+Use the available tools to gather context and make changes. \
+When using tools, pass JSON arguments that match their parameters. \
+If you call a tool, you MUST also include an output_text message explaining why. \
+Runtime: os={}, shell={}.",
+            os_name, shell_name
+        )
+    } else {
+        format!(
+            "You are Drastis, a coding agent. Use available tools to gather context and make changes. Be concise and accurate. Runtime: os={}, shell={}.",
+            os_name, shell_name
+        )
+    }
+}
+
+fn get_runtime_environment() -> (String, String) {
+    let os_name = std::env::consts::OS.to_string();
+    let shell_name = std::env::var("SHELL")
+        .ok()
+        .and_then(|path| {
+            std::path::Path::new(&path)
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    (os_name, shell_name)
 }
 
 fn _format_chain_context(chain: &Chain) -> String {

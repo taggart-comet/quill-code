@@ -1,12 +1,38 @@
 use crate::domain::session::Request;
-use crate::domain::tools::{Tool, ToolInput, ToolResult};
+use crate::domain::tools::{Error, Tool, ToolResult};
 use crate::utils::paths::is_within_root;
+use serde::Deserialize;
+use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use walkdir::WalkDir;
 
-pub struct FindFiles;
+pub struct FindFiles {
+    input: Mutex<Option<FindFilesInput>>,
+}
+
+#[derive(Debug, Clone)]
+struct FindFilesInput {
+    raw: String,
+    query: String,
+    root: Option<String>,
+    max_results: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct FindFilesInputJson {
+    query: String,
+    root: Option<String>,
+    max_results: Option<usize>,
+}
 
 impl FindFiles {
+    pub fn new() -> Self {
+        Self {
+            input: Mutex::new(None),
+        }
+    }
+
     /// Resolve the search root, defaulting to project_root if not specified
     fn resolve_search_root(
         input_root: Option<&str>,
@@ -91,6 +117,29 @@ impl FindFiles {
             .map(|(path, _)| path)
             .collect()
     }
+
+    fn parse_input_json(raw: &str) -> Result<FindFilesInput, Error> {
+        let parsed: FindFilesInputJson =
+            serde_json::from_str(raw).map_err(|e| Error::Parse(e.to_string()))?;
+        if parsed.query.is_empty() {
+            return Err(Error::Parse("query is required".into()));
+        }
+
+        Ok(FindFilesInput {
+            raw: raw.to_string(),
+            query: parsed.query,
+            root: parsed.root,
+            max_results: parsed.max_results.unwrap_or(20),
+        })
+    }
+
+    fn load_input(&self) -> Result<FindFilesInput, Error> {
+        self.input
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| Error::Parse("input not parsed".into()))
+    }
 }
 
 impl Tool for FindFiles {
@@ -98,69 +147,102 @@ impl Tool for FindFiles {
         "find_files"
     }
 
-    fn work(&self, input: &ToolInput, request: &dyn Request) -> ToolResult {
-        // Parse query
-        let query = match input.require_text("query") {
-            Ok(q) => q,
-            Err(e) => return ToolResult::error(self.name(), input, e),
+    fn parse_input(&self, input: String) -> Option<Error> {
+        let trimmed = input.trim();
+        let parsed = Self::parse_input_json(trimmed);
+
+        match parsed {
+            Ok(parsed) => {
+                *self.input.lock().unwrap() = Some(parsed);
+                None
+            }
+            Err(err) => Some(err),
+        }
+    }
+
+    fn work(&self, request: &dyn Request) -> ToolResult {
+        let input = match self.load_input() {
+            Ok(input) => input,
+            Err(e) => {
+                return ToolResult::error(
+                    self.name().to_string(),
+                    String::new(),
+                    e.to_string(),
+                )
+            }
         };
 
-        if query.is_empty() {
-            return ToolResult::error(self.name(), input, "Query is required".to_string());
-        }
-
-        // Parse optional fields
-        let root = input.get_text("root");
-        let max_results = input
-            .get_int("max_results")
-            .map(|n| n as usize)
-            .unwrap_or(20);
-
         // Resolve and validate search root
-        let search_root = match Self::resolve_search_root(root.as_deref(), request.project_root()) {
+        let search_root =
+            match Self::resolve_search_root(input.root.as_deref(), request.project_root()) {
             Ok(root) => root,
-            Err(e) => return ToolResult::error(self.name(), input, e),
+            Err(e) => return ToolResult::error(self.name().to_string(), input.raw, e),
         };
 
         // Check if search root exists
         if !search_root.exists() {
             return ToolResult::error(
-                self.name(),
-                input,
+                self.name().to_string(),
+                input.raw,
                 format!("Search root does not exist: {}", search_root.display()),
             );
         }
 
         // Search for files
-        let results = Self::search_files(&search_root, &query, max_results);
+        let results = Self::search_files(&search_root, &input.query, input.max_results);
 
         // Format output
         let output = if results.is_empty() {
-            format!("No files found matching '{}'", query)
+            format!("No files found matching '{}'", input.query)
         } else {
-            let mut output = format!("Found {} file(s) matching '{}':\n", results.len(), query);
+            let mut output = format!(
+                "Found {} file(s) matching '{}':\n",
+                results.len(),
+                input.query
+            );
             for path in &results {
                 output.push_str(&format!("  - {}\n", path));
             }
             output
         };
 
-        ToolResult::ok(self.name(), input, output)
+        ToolResult::ok(self.name().to_string(), input.raw, output)
     }
 
-    fn spec(&self) -> String {
-        format!(
-            r#"Use the `{}` tool to find files by substring match. Fill the input format precisely:
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "substring to match against path/filename"
+                },
+                "root": {
+                    "type": "string",
+                    "description": "optional; default is project root"
+                },
+                "max_results": {
+                    "type": "number",
+                    "description": "optional; default 20"
+                }
+            },
+            "required": ["query"],
+            "additionalProperties": false
+        })
+    }
 
-<tool_name>{}</tool_name>
-<input>
-  <query>string</query>         # substring to match against path/filename
-  <root>string</root>          # optional; default is project root
-  <max_results>integer</max_results>  # optional; default 20
-</input>"#,
-            self.name(),
+    fn desc(&self) -> String {
+        format!(
+            "Use the `{}` tool to find files by substring match.",
             self.name()
         )
+    }
+
+}
+
+impl Default for FindFiles {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

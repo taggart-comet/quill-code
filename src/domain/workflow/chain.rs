@@ -11,6 +11,8 @@ pub struct Chain {
     pub steps: Vec<ChainStep>,
     pub is_failed: bool,
     pub fail_reason: String,
+    #[serde(default)]
+    pub final_message: Option<String>,
 }
 
 impl Chain {
@@ -19,6 +21,7 @@ impl Chain {
             steps: Vec::new(),
             is_failed: false,
             fail_reason: String::new(),
+            final_message: None,
         }
     }
 
@@ -53,27 +56,12 @@ impl Chain {
         self.steps.is_empty()
     }
 
-    /// Get the finish message from the finish tool output
-    /// Returns the output of the finish tool if found, otherwise returns a default message
-    pub fn get_finish_message(&self) -> String {
-        // Look for the finish tool step by checking if summary contains "finish"
-        if let Some(finish_step) = self.steps.iter().find(|step| {
-            step.step_type == StepType::ToolCall.as_str() && step.summary.contains("finish")
-        }) {
-            // Extract message from summary like "Tool `finish` was executed successfully"
-            // For finish tool, we want to return a success message
-            if finish_step.summary.contains("successfully") {
-                return "The request is fulfilled".to_string();
-            }
-            finish_step.summary.clone()
-        } else {
-            // No finish tool found, return a default message
-            if self.is_empty() {
-                "No steps executed.".to_string()
-            } else {
-                format!("Workflow completed. Executed {} steps.", self.len())
-            }
-        }
+    pub fn set_final_message(&mut self, message: String) {
+        self.final_message = Some(message);
+    }
+
+    pub fn final_message(&self) -> Option<&str> {
+        self.final_message.as_deref()
     }
 
     /// Get a summary of the chain execution
@@ -227,12 +215,12 @@ mod tests {
 
     #[test]
     fn test_chain_add_step() {
-        use crate::domain::tools::{ToolInput, ToolResult};
+        use crate::domain::tools::ToolResult;
         use crate::domain::workflow::step::StepType;
 
         let mut chain = Chain::new();
-        let input = ToolInput::new("<input><file>test.rs</file></input>").unwrap();
-        let result = ToolResult::ok("read_file", &input, "content here");
+        let input = "<input><file>test.rs</file></input>".to_string();
+        let result = ToolResult::ok("read_file".to_string(), input, "content here".to_string());
         chain.add_step(result);
 
         assert_eq!(chain.len(), 1);
@@ -243,11 +231,11 @@ mod tests {
 
     #[test]
     fn test_chain_get_summary() {
-        use crate::domain::tools::{ToolInput, ToolResult};
+        use crate::domain::tools::ToolResult;
 
         let mut chain = Chain::new();
-        let input = ToolInput::new("<input></input>").unwrap();
-        let result = ToolResult::ok("read_file", &input, "");
+        let input = "<input></input>".to_string();
+        let result = ToolResult::ok("read_file".to_string(), input, "".to_string());
         chain.add_step(result);
 
         let summary = chain.get_summary();
@@ -258,14 +246,14 @@ mod tests {
 
     #[test]
     fn test_chain_get_log() {
-        use crate::domain::tools::{ToolInput, ToolResult};
+        use crate::domain::tools::ToolResult;
 
         let mut chain = Chain::new();
-        let input1 = ToolInput::new("<input></input>").unwrap();
-        let result1 = ToolResult::ok("read_file", &input1, "");
+        let input1 = "<input></input>".to_string();
+        let result1 = ToolResult::ok("read_file".to_string(), input1, "".to_string());
         chain.add_step(result1);
-        let input2 = ToolInput::new("<input></input>").unwrap();
-        let result2 = ToolResult::ok("find_files", &input2, "");
+        let input2 = "<input></input>".to_string();
+        let result2 = ToolResult::ok("find_files".to_string(), input2, "".to_string());
         chain.add_step(result2);
 
         let log = chain.get_log();

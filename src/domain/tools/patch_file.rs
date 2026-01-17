@@ -1,28 +1,60 @@
 use crate::domain::session::Request;
-use crate::domain::tools::{escape_xml, Tool, ToolInput, ToolResult};
+use crate::domain::tools::{Error, Tool, ToolResult};
+use serde::Deserialize;
+use serde_json::json;
 use std::fs;
-use std::process::Command;
+use std::path::Component;
+use std::sync::Mutex;
+use zenpatch::apply as apply_patch;
+use zenpatch::parser::text_to_patch::text_to_patch;
+use zenpatch::Vfs;
 
-pub struct PatchFile;
+pub struct PatchFile {
+    input: Mutex<Option<PatchFileInput>>,
+}
+
+#[derive(Debug, Clone)]
+struct PatchFileInput {
+    raw: String,
+    file_path: String,
+    patch: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchFileInputJson {
+    file_path: String,
+    patch: String,
+}
 
 impl PatchFile {
-    /// Get all text content from an element, including text from all child text nodes
-    /// This is needed for multi-line content like patches
-    fn get_element_text_content(input: &ToolInput, tag: &str) -> Option<String> {
-        let doc = roxmltree::Document::parse(input.raw()).ok()?;
-        let element = doc.descendants().find(|n| n.has_tag_name(tag))?;
-
-        // Collect all text from this element and its children
-        let mut text = String::new();
-        for node in element.descendants() {
-            if node.is_text() {
-                if let Some(text_content) = node.text() {
-                    text.push_str(text_content);
-                }
-            }
+    pub fn new() -> Self {
+        Self {
+            input: Mutex::new(None),
         }
+    }
 
-        Some(text)
+    fn parse_input_json(raw: &str) -> Result<PatchFileInput, Error> {
+        let parsed: PatchFileInputJson =
+            serde_json::from_str(raw).map_err(|e| Error::Parse(e.to_string()))?;
+        if parsed.file_path.is_empty() {
+            return Err(Error::Parse("file_path is required".into()));
+        }
+        if parsed.patch.trim().is_empty() {
+            return Err(Error::Parse("patch is required".into()));
+        }
+        Ok(PatchFileInput {
+            raw: raw.to_string(),
+            file_path: parsed.file_path,
+            patch: parsed.patch,
+        })
+    }
+
+    fn load_input(&self) -> Result<PatchFileInput, Error> {
+        self.input
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| Error::Parse("input not parsed".into()))
     }
 }
 
@@ -31,98 +63,186 @@ impl Tool for PatchFile {
         "patch_file"
     }
 
-    fn work(&self, input: &ToolInput, request: &dyn Request) -> ToolResult {
-        // Parse input - file_path is kept for validation/documentation but patch contains the actual paths
-        let _file_path = match input.require_text("file_path") {
-            Ok(p) => p,
-            Err(e) => return ToolResult::error(self.name(), input, e),
-        };
+    fn parse_input(&self, input: String) -> Option<Error> {
+        let trimmed = input.trim();
+        let parsed = Self::parse_input_json(trimmed);
 
-        // Get patch content
-        let patch = match Self::get_element_text_content(input, "patch") {
-            Some(p) if !p.trim().is_empty() => p,
-            _ => return ToolResult::error(self.name(), input, "Missing or empty <patch> element"),
-        };
-
-        // Create temp file for the patch
-        let patch_file = match tempfile::NamedTempFile::new() {
-            Ok(f) => f,
-            Err(e) => {
-                return ToolResult::error(
-                    self.name(),
-                    input,
-                    format!("Failed to create temp file: {}", e),
-                )
+        match parsed {
+            Ok(parsed) => {
+                *self.input.lock().unwrap() = Some(parsed);
+                None
             }
-        };
-
-        if let Err(e) = fs::write(patch_file.path(), &patch) {
-            return ToolResult::error(self.name(), input, format!("Failed to write patch: {}", e));
-        }
-
-        // Apply with git apply
-        let output = match Command::new("git")
-            .arg("apply")
-            .arg("--unidiff-zero")
-            .arg("--verbose")
-            .arg(patch_file.path())
-            .current_dir(request.project_root())
-            .output()
-        {
-            Ok(o) => o,
-            Err(e) => {
-                return ToolResult::error(
-                    self.name(),
-                    input,
-                    format!("Failed to execute git apply: {}", e),
-                )
-            }
-        };
-
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-        if output.status.success() {
-            let msg = if stdout.is_empty() && stderr.is_empty() {
-                "Patch applied successfully".to_string()
-            } else {
-                format!("Patch applied successfully\n{}{}", stdout, stderr)
-            };
-            ToolResult::ok(
-                self.name(),
-                input,
-                format!("<result>{}</result>", escape_xml(&msg)),
-            )
-        } else {
-            let mut error_msg = format!("Failed to apply patch\nPatch content:\n{}", patch);
-            if !stderr.is_empty() {
-                error_msg.push_str(&format!("\n[stderr]: {}", stderr));
-            }
-            ToolResult::error(self.name(), input, error_msg)
+            Err(err) => Some(err),
         }
     }
 
-    fn spec(&self) -> String {
-        format!(
-            r#"Use the `{name}` tool to edit files using git apply.
+    fn work(&self, request: &dyn Request) -> ToolResult {
+        let input = match self.load_input() {
+            Ok(input) => input,
+            Err(e) => {
+                return ToolResult::error(
+                    self.name().to_string(),
+                    String::new(),
+                    e.to_string(),
+                )
+            }
+        };
 
-<tool_name>{name}</tool_name>
-<input>
-  <file_path>src/main.rs</file_path>
-  <patch>
- --- a/foo.py
-+++ b/foo.py
-@@
- def bar(x):
-     return x * 2
-+
-+def baz(x):
-+    return x + 1   
-  </patch>
-</input>
-"#,
+        let actions = match text_to_patch(&input.patch) {
+            Ok(actions) => actions,
+            Err(e) => {
+                return ToolResult::error(
+                    self.name().to_string(),
+                    input.raw,
+                    format!("Failed to parse patch: {}", e),
+                )
+            }
+        };
+
+        let input_path_match = actions.iter().any(|action| {
+            action.path == input.file_path
+                || action
+                    .new_path
+                    .as_deref()
+                    .is_some_and(|path| path == input.file_path.as_str())
+        });
+        if !input_path_match {
+            return ToolResult::error(
+                self.name().to_string(),
+                input.raw,
+                format!(
+                    "Patch does not reference file_path '{}'",
+                    input.file_path
+                ),
+            );
+        }
+
+        let mut vfs = Vfs::new();
+        let mut touched_paths: Vec<String> = Vec::new();
+        for action in &actions {
+            if !touched_paths.contains(&action.path) {
+                touched_paths.push(action.path.clone());
+            }
+            if let Some(new_path) = &action.new_path {
+                if !touched_paths.contains(new_path) {
+                    touched_paths.push(new_path.clone());
+                }
+            }
+        }
+
+        let project_root = request.project_root();
+        for path in &touched_paths {
+            let rel_path = std::path::Path::new(path);
+            if rel_path.is_absolute()
+                || rel_path
+                    .components()
+                    .any(|component| matches!(component, Component::ParentDir))
+            {
+                return ToolResult::error(
+                    self.name().to_string(),
+                    input.raw,
+                    format!("Invalid path outside project root: {}", path),
+                );
+            }
+            let fs_path = project_root.join(rel_path);
+            if fs_path.exists() {
+                match fs::read_to_string(&fs_path) {
+                    Ok(content) => {
+                        vfs.insert(path.clone(), content);
+                    }
+                    Err(e) => {
+                        return ToolResult::error(
+                            self.name().to_string(),
+                            input.raw,
+                            format!("Failed to read file '{}': {}", fs_path.display(), e),
+                        )
+                    }
+                }
+            }
+        }
+
+        let new_vfs = match apply_patch(&input.patch, &vfs) {
+            Ok(new_vfs) => new_vfs,
+            Err(e) => {
+                return ToolResult::error(
+                    self.name().to_string(),
+                    input.raw,
+                    format!("Failed to apply patch: {}", e),
+                )
+            }
+        };
+
+        for path in &touched_paths {
+            let fs_path = project_root.join(path);
+            if let Some(content) = new_vfs.get(path) {
+                if let Some(parent) = fs_path.parent() {
+                if let Err(e) = fs::create_dir_all(parent) {
+                    return ToolResult::error(
+                        self.name().to_string(),
+                        input.raw,
+                            format!(
+                                "Failed to create parent directories for '{}': {}",
+                                fs_path.display(),
+                                e
+                            ),
+                        );
+                    }
+                }
+                if let Err(e) = fs::write(&fs_path, content) {
+                    return ToolResult::error(
+                        self.name().to_string(),
+                        input.raw,
+                        format!("Failed to write file '{}': {}", fs_path.display(), e),
+                    );
+                }
+            } else if fs_path.exists() {
+                if let Err(e) = fs::remove_file(&fs_path) {
+                    return ToolResult::error(
+                        self.name().to_string(),
+                        input.raw,
+                        format!("Failed to delete file '{}': {}", fs_path.display(), e),
+                    );
+                }
+            }
+        }
+
+        ToolResult::ok(
+            self.name().to_string(),
+            input.raw,
+            "Patch applied successfully".to_string(),
+        )
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "path to the file being patched"
+                },
+                "patch": {
+                    "type": "string",
+                    "description": "Begin Patch / Update File patch format content"
+                }
+            },
+            "required": ["file_path", "patch"],
+            "additionalProperties": false
+        })
+    }
+
+    fn desc(&self) -> String {
+        format!(
+            "Use the `{name}` tool to edit files using the Begin Patch / Update File patch format.",
             name = self.name()
         )
+    }
+
+}
+
+impl Default for PatchFile {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -130,65 +250,30 @@ impl Tool for PatchFile {
 mod tests {
     use super::*;
     use crate::domain::session::VirtualRequest;
-    use std::process::Command;
     use tempfile::tempdir;
-
-    fn init_git_repo(path: &std::path::Path) {
-        Command::new("git")
-            .args(["init"])
-            .current_dir(path)
-            .output()
-            .expect("Failed to init git repo");
-
-        Command::new("git")
-            .args(["config", "user.email", "test@test.com"])
-            .current_dir(path)
-            .output()
-            .expect("Failed to set git config");
-
-        Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(path)
-            .output()
-            .expect("Failed to set git config");
-    }
 
     #[test]
     fn test_patch_file_simple_change() {
         let temp = tempdir().unwrap();
-        init_git_repo(temp.path());
 
         let file_path = temp.path().join("test.txt");
         fs::write(&file_path, "line1\nline2\nline3\n").unwrap();
 
-        Command::new("git")
-            .args(["add", "test.txt"])
-            .current_dir(temp.path())
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "-m", "initial"])
-            .current_dir(temp.path())
-            .output()
-            .unwrap();
-
         let request = VirtualRequest::new("test", temp.path());
 
-        let xml = r#"<input>
-            <file_path>test.txt</file_path>
-            <patch>
---- a/test.txt
-+++ b/test.txt
-@@ -1,3 +1,3 @@
- line1
--line2
-+line2_modified
- line3
-            </patch>
-        </input>"#;
-
-        let input = ToolInput::new(xml).unwrap();
-        let result = PatchFile.work(&input, &request);
+        let tool = PatchFile::new();
+        let patch = "*** Begin Patch\n\
+*** Update File: test.txt\n\
+@@\n\
+-line2\n\
++line2_modified\n\
+*** End Patch";
+        let input = format!(
+            "{{\"file_path\":\"test.txt\",\"patch\":\"{}\"}}",
+            patch.replace('\n', "\\n").replace('"', "\\\"")
+        );
+        assert!(tool.parse_input(input).is_none());
+        let result = tool.work(&request);
 
         assert!(
             result.output_string().contains("successfully"),
@@ -207,40 +292,28 @@ mod tests {
     #[test]
     fn test_patch_file_add_lines() {
         let temp = tempdir().unwrap();
-        init_git_repo(temp.path());
 
         let file_path = temp.path().join("code.py");
         fs::write(&file_path, "def foo():\n    pass\n").unwrap();
 
-        Command::new("git")
-            .args(["add", "code.py"])
-            .current_dir(temp.path())
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "-m", "initial"])
-            .current_dir(temp.path())
-            .output()
-            .unwrap();
-
         let request = VirtualRequest::new("test", temp.path());
 
-        let xml = r#"<input>
-            <file_path>code.py</file_path>
-            <patch>
---- a/code.py
-+++ b/code.py
-@@ -1,2 +1,5 @@
- def foo():
-     pass
-+
-+def bar():
-+    pass
-            </patch>
-        </input>"#;
-
-        let input = ToolInput::new(xml).unwrap();
-        let result = PatchFile.work(&input, &request);
+        let tool = PatchFile::new();
+        let patch = "*** Begin Patch\n\
+*** Update File: code.py\n\
+@@\n\
+ def foo():\n\
+     pass\n\
++\n\
++def bar():\n\
++    pass\n\
+*** End Patch";
+        let input = format!(
+            "{{\"file_path\":\"code.py\",\"patch\":\"{}\"}}",
+            patch.replace('\n', "\\n").replace('"', "\\\"")
+        );
+        assert!(tool.parse_input(input).is_none());
+        let result = tool.work(&request);
 
         assert!(
             result.output_string().contains("successfully"),
@@ -255,17 +328,13 @@ mod tests {
     #[test]
     fn test_patch_file_empty_patch() {
         let temp = tempdir().unwrap();
-        init_git_repo(temp.path());
 
         let request = VirtualRequest::new("test", temp.path());
 
-        let xml = r#"<input>
-            <file_path>test.txt</file_path>
-            <patch></patch>
-        </input>"#;
-
-        let input = ToolInput::new(xml).unwrap();
-        let result = PatchFile.work(&input, &request);
+        let tool = PatchFile::new();
+        let input = "{\"file_path\":\"test.txt\",\"patch\":\"not a patch\"}".to_string();
+        assert!(tool.parse_input(input).is_none());
+        let result = tool.work(&request);
 
         assert!(
             result.output_string().contains("Error"),

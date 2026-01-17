@@ -1,14 +1,18 @@
 use crate::domain::session::Request;
-use crate::domain::tools::{Tool, ToolInput, ToolResult};
+use crate::domain::tools::{Error, Tool, ToolResult};
 use serde::Deserialize;
+use serde_json::json;
 use std::io::{self, Write};
 use std::process::Command;
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
 const DELAY_SECONDS: u64 = 5;
 
-pub struct ShellExec;
+pub struct ShellExec {
+    input: Mutex<Option<ShellExecInputParsed>>,
+}
 
 /// Input struct for the shell_exec tool - can be deserialized from XML
 #[derive(Debug, Deserialize)]
@@ -20,44 +24,67 @@ pub struct ShellExecInput {
     pub working_dir: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct ShellExecInputParsed {
+    raw: String,
+    command: String,
+    working_dir: Option<String>,
+}
+
 impl Tool for ShellExec {
     fn name(&self) -> &'static str {
         "shell_exec"
     }
 
-    fn work(&self, input: &ToolInput, request: &dyn Request) -> ToolResult {
-        // Option 1: Use serde deserialization (cleaner, type-safe)
-        let parsed: ShellExecInput = match input.deserialize() {
-            Ok(p) => p,
-            Err(e) => {
-                // Fallback to manual parsing if deserialization fails
-                return ToolResult::error(self.name(), input, format!("Invalid input: {}", e));
+    fn parse_input(&self, input: String) -> Option<Error> {
+        let trimmed = input.trim();
+        let parsed = serde_json::from_str::<ShellExecInput>(trimmed)
+            .map_err(|e| Error::Parse(e.to_string()));
+
+        match parsed {
+            Ok(parsed) => {
+                if parsed.command.trim().is_empty() {
+                    return Some(Error::Parse("command cannot be empty".into()));
+                }
+                *self.input.lock().unwrap() = Some(ShellExecInputParsed {
+                    raw: trimmed.to_string(),
+                    command: parsed.command,
+                    working_dir: parsed.working_dir,
+                });
+                None
+            }
+            Err(err) => Some(err),
+        }
+    }
+
+    fn work(&self, request: &dyn Request) -> ToolResult {
+        let input = match self.input.lock().unwrap().clone() {
+            Some(input) => input,
+            None => {
+                return ToolResult::error(
+                    self.name().to_string(),
+                    String::new(),
+                    "input not parsed".to_string(),
+                )
             }
         };
 
-        let command = parsed.command;
-        let working_dir = parsed.working_dir;
-
-        if command.trim().is_empty() {
-            return ToolResult::error(self.name(), input, "Command cannot be empty");
-        }
-
         // Determine working directory
-        let work_dir = match &working_dir {
+        let work_dir = match &input.working_dir {
             Some(dir) => {
                 let path = std::path::Path::new(dir);
                 if !path.exists() {
                     return ToolResult::error(
-                        self.name(),
-                        input,
+                        self.name().to_string(),
+                        input.raw,
                         format!("Working directory does not exist: {}", dir),
                     );
                 }
                 if !crate::utils::paths::is_within_root(path, request.project_root()) {
                     return ToolResult::error(
-                        self.name(),
-                        input,
-                        "Working directory is outside project root",
+                        self.name().to_string(),
+                        input.raw,
+                        "Working directory is outside project root".to_string(),
                     );
                 }
                 path.to_path_buf()
@@ -66,20 +93,20 @@ impl Tool for ShellExec {
         };
 
         // Warn user and give time to cancel
-        Self::warn_and_wait(&command, &work_dir);
+        Self::warn_and_wait(&input.command, &work_dir);
 
         // Execute the command
         let output = match Command::new("bash")
             .arg("-c")
-            .arg(&command)
+            .arg(&input.command)
             .current_dir(&work_dir)
             .output()
         {
             Ok(o) => o,
             Err(e) => {
                 return ToolResult::error(
-                    self.name(),
-                    input,
+                    self.name().to_string(),
+                    input.raw,
                     format!("Failed to execute command: {}", e),
                 )
             }
@@ -109,25 +136,51 @@ impl Tool for ShellExec {
             if !stderr.is_empty() {
                 result.push_str(&format!("[stderr]: {}", stderr));
             }
-            return ToolResult::error(self.name(), input, result);
+            return ToolResult::error(self.name().to_string(), input.raw, result);
         };
 
-        ToolResult::ok(self.name(), input, result)
+        ToolResult::ok(self.name().to_string(), input.raw, result)
     }
 
-    fn spec(&self) -> String {
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "the command to execute"
+                },
+                "working_dir": {
+                    "type": "string",
+                    "description": "optional; directory to run command in (default: project root)"
+                }
+            },
+            "required": ["command"],
+            "additionalProperties": false
+        })
+    }
+
+    fn desc(&self) -> String {
         format!(
             r#"Use the `{}` tool to execute shell commands.
-Please DO NOT use it to read the full content of a file, this is not efficient, use other tools for this.
-
-<tool_name>{}</tool_name>
-<input>
-  <command>string</command>      # the command to execute
-  <working_dir>string</working_dir>  # optional; directory to run command in (default: project root)
-</input>"#,
-            self.name(),
+Please DO NOT use it to read the full content of a file, this is not efficient, use other tools for this."#,
             self.name()
         )
+    }
+
+}
+
+impl ShellExec {
+    pub fn new() -> Self {
+        Self {
+            input: Mutex::new(None),
+        }
+    }
+}
+
+impl Default for ShellExec {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -162,7 +215,6 @@ impl ShellExec {
 mod tests {
     use super::*;
     use crate::domain::session::VirtualRequest;
-    use crate::domain::tools::ToolInput;
     use std::fs;
     use tempfile::tempdir;
 
@@ -171,9 +223,11 @@ mod tests {
         let temp = tempdir().unwrap();
         let request = VirtualRequest::new("test", temp.path());
 
-        let input = ToolInput::new(r#"<input><command>echo hello</command></input>"#).unwrap();
-
-        let result = ShellExec.work(&input, &request);
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(r#"{"command":"echo hello"}"#.to_string())
+            .is_none());
+        let result = tool.work(&request);
 
         assert!(
             result.output_string().contains("hello"),
@@ -187,9 +241,11 @@ mod tests {
         let temp = tempdir().unwrap();
         let request = VirtualRequest::new("test", temp.path());
 
-        let input = ToolInput::new(r#"<input><command>pwd</command></input>"#).unwrap();
-
-        let result = ShellExec.work(&input, &request);
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(r#"{"command":"pwd"}"#.to_string())
+            .is_none());
+        let result = tool.work(&request);
 
         // Should contain the temp directory path
         let temp_path = temp.path().canonicalize().unwrap();
@@ -209,13 +265,14 @@ mod tests {
 
         let request = VirtualRequest::new("test", temp.path());
 
-        let input = ToolInput::new(&format!(
-            r#"<input><command>pwd</command><working_dir>{}</working_dir></input>"#,
-            subdir.display()
-        ))
-        .unwrap();
-
-        let result = ShellExec.work(&input, &request);
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(format!(
+                r#"{{"command":"pwd","working_dir":"{}"}}"#,
+                subdir.display()
+            ))
+            .is_none());
+        let result = tool.work(&request);
 
         let subdir_canonical = subdir.canonicalize().unwrap();
         assert!(
@@ -232,12 +289,11 @@ mod tests {
         let temp = tempdir().unwrap();
         let request = VirtualRequest::new("test", temp.path());
 
-        let input = ToolInput::new(
-            r#"<input><command>pwd</command><working_dir>/tmp</working_dir></input>"#,
-        )
-        .unwrap();
-
-        let result = ShellExec.work(&input, &request);
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(r#"{"command":"pwd","working_dir":"/tmp"}"#.to_string())
+            .is_none());
+        let result = tool.work(&request);
 
         assert!(
             result.output_string().contains("Error"),
@@ -252,9 +308,11 @@ mod tests {
         let temp = tempdir().unwrap();
         let request = VirtualRequest::new("test", temp.path());
 
-        let input = ToolInput::new(r#"<input><command>exit 1</command></input>"#).unwrap();
-
-        let result = ShellExec.work(&input, &request);
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(r#"{"command":"exit 1"}"#.to_string())
+            .is_none());
+        let result = tool.work(&request);
 
         assert!(
             result.output_string().contains("Error"),
@@ -269,12 +327,11 @@ mod tests {
         let temp = tempdir().unwrap();
         let request = VirtualRequest::new("test", temp.path());
 
-        let input = ToolInput::new(
-            r#"<input><command>echo error &gt;&amp;2 &amp;&amp; exit 1</command></input>"#,
-        )
-        .unwrap();
-
-        let result = ShellExec.work(&input, &request);
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(r#"{"command":"echo error >&2 && exit 1"}"#.to_string())
+            .is_none());
+        let result = tool.work(&request);
 
         assert!(result.output_string().contains("Error"));
         assert!(result.output_string().contains("error"));
@@ -285,12 +342,11 @@ mod tests {
         let temp = tempdir().unwrap();
         let request = VirtualRequest::new("test", temp.path());
 
-        let input = ToolInput::new(r#"<input><command></command></input>"#).unwrap();
-
-        let result = ShellExec.work(&input, &request);
-
+        let tool = ShellExec::new();
+        let err = tool.parse_input(r#"{"command":""}"#.to_string());
+        assert!(err.is_some());
+        let result = tool.work(&request);
         assert!(result.output_string().contains("Error"));
-        assert!(result.output_string().contains("empty"));
     }
 
     #[test]
@@ -299,13 +355,14 @@ mod tests {
         let request = VirtualRequest::new("test", temp.path());
         let file_path = temp.path().join("created.txt");
 
-        let input = ToolInput::new(&format!(
-            r#"<input><command>echo 'test content' > {}</command></input>"#,
-            file_path.display()
-        ))
-        .unwrap();
-
-        let result = ShellExec.work(&input, &request);
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(format!(
+                r#"{{"command":"echo 'test content' > {}"}}"#,
+                file_path.display()
+            ))
+            .is_none());
+        let result = tool.work(&request);
 
         assert!(
             !result.output_string().contains("Error"),
@@ -323,12 +380,11 @@ mod tests {
         let temp = tempdir().unwrap();
         let request = VirtualRequest::new("test", temp.path());
 
-        let input = ToolInput::new(
-            r#"<input><command>echo 'hello world' | tr 'a-z' 'A-Z'</command></input>"#,
-        )
-        .unwrap();
-
-        let result = ShellExec.work(&input, &request);
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(r#"{"command":"echo 'hello world' | tr 'a-z' 'A-Z'"}"#.to_string())
+            .is_none());
+        let result = tool.work(&request);
 
         assert!(
             result.output_string().contains("HELLO WORLD"),

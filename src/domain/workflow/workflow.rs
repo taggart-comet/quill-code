@@ -1,7 +1,7 @@
 use super::{chain::Chain, toolset::Toolset, CancellationToken, Error};
 use crate::domain::prompting;
 use crate::domain::session::Request;
-use crate::domain::tools::ToolResult;
+use crate::domain::tools::Tool;
 use crate::domain::workflow::GeneralToolset;
 use crate::infrastructure::inference::{local::LocalEngine, InferenceEngine};
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use std::sync::Arc;
 /// 1. Asks LLM to choose the next tool
 /// 2. Executes that tool
 /// 3. Stores the result in the chain
-/// 4. Repeats until "finish" tool is chosen or 128 iterations reached
+/// 4. Repeats until 128 iterations reached
 pub struct Workflow {
     toolset: Box<dyn Toolset>,
     engine: Arc<dyn InferenceEngine>,
@@ -32,11 +32,15 @@ impl Workflow {
     /// - Asks LLM to choose next tool
     /// - Executes the tool
     /// - Stores result in chain
-    /// - Repeats until "finish" or 128 iterations
+    /// - Repeats until 128 iterations
     ///
     /// The workflow checks the cancellation token before each iteration
     /// and returns Error::Cancelled if cancellation was requested.
-    pub fn run(&self, request: &dyn Request, cancel: &CancellationToken) -> Result<Chain, Error> {
+    pub fn run(
+        &self,
+        request: &mut dyn Request,
+        cancel: &CancellationToken,
+    ) -> Result<Chain, Error> {
         const MAX_ITERATIONS: usize = 128;
 
         // Initialize the chain to track executed steps
@@ -51,19 +55,20 @@ impl Workflow {
                 return Ok(chain);
             }
 
-            // Create prompt with chain context
-            let prompt = prompting::main_request_prompt(
-                self.engine.get_type(),
-                request,
-                self.toolset.as_ref(),
-                &chain,
-            );
+            let system_prompt = prompting::get_system_prompt(self.engine.get_type());
+            let user_prompt = prompting::get_user_prompt(self.engine.get_type(), request);
 
             // Ask LLM to choose next tool
             let llm_output = self
                 .engine
-                .generate(&prompt, 1024)
-                .map_err(Error::Inference)?;
+                .generate(
+                    &system_prompt,
+                    &user_prompt,
+                    1024,
+                    &self.toolset.tool_refs(),
+                    &chain,
+                )
+                .map_err(|e| Error::Inference(e.to_string()))?;
 
             // Check for cancellation after inference
             if cancel.is_cancelled() {
@@ -72,36 +77,14 @@ impl Workflow {
                 return Ok(chain);
             }
 
-            // Parse tool choice from LLM output
-            let (tool_name, input_xml) = super::chain::parse_tool_choice(&llm_output)?;
-
-            // Check if we should finish
-            if tool_name == "finish" {
-                log::info!("Finish tool chosen, ending workflow");
-                break;
+            if llm_output.chosen_tool.is_none() {
+                let final_message = llm_output.summary;
+                chain.set_final_message(final_message.clone());
+                request.set_final_message(final_message);
+                return Ok(chain);
             }
 
-            // Execute the tool
-            let tool_result = match self.toolset.execute_tool(&tool_name, &input_xml, request) {
-                Ok(result) => {
-                    log::info!("Tool {} executed successfully", tool_name);
-                    result
-                }
-                Err(error) => {
-                    log::warn!("Tool {} failed: {}", tool_name, error);
-                    let error_msg = format!("Tool execution failed: {}", error);
-                    // Create an error ToolResult for consistency
-                    let tool_input = crate::domain::tools::ToolInput::new(&input_xml)
-                        .unwrap_or_else(|_| {
-                            crate::domain::tools::ToolInput::new("<input></input>").unwrap()
-                        });
-                    let result =
-                        ToolResult::error(tool_name.clone(), &tool_input, error_msg.clone());
-                    chain.add_step(result);
-                    chain.mark_failed(error_msg);
-                    return Ok(chain);
-                }
-            };
+            let tool_result = llm_output.chosen_tool.unwrap().work(request);
 
             // Add step to chain
             chain.add_step(tool_result);

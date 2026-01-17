@@ -2,7 +2,7 @@ use crate::domain::session::Request;
 use crate::domain::ModelType;
 
 /// Format request history and current request as a complete prompt
-pub fn format_session_prompt(_model_type: ModelType, request: &dyn Request) -> String {
+pub fn get_user_prompt(_model_type: ModelType, request: &dyn Request) -> String {
     let mut formatted = String::new();
 
     // Add history section

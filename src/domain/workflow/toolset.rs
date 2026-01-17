@@ -1,7 +1,7 @@
 use super::Error;
 use crate::domain::prompting::format_tools_description;
 use crate::domain::session::Request;
-use crate::domain::tools::{Tool, ToolInput, ToolResult};
+use crate::domain::tools::Tool;
 use std::collections::HashMap;
 
 pub use super::toolsets::GeneralToolset;
@@ -31,22 +31,9 @@ pub trait Toolset {
         )
     }
 
-    /// Execute a tool with the given input (XML string)
-    fn execute_tool(
-        &self,
-        tool_name: &str,
-        input_xml: &str,
-        request: &dyn Request,
-    ) -> Result<ToolResult, Error> {
-        match self.get_tool(tool_name) {
-            Some(tool) => {
-                let tool_input = ToolInput::new(input_xml)
-                    .map_err(|e| Error::Parse(format!("invalid xml input: {}", e)))?;
-                let result = tool.work(&tool_input, request);
-                Ok(result)
-            }
-            None => Err(Error::ToolNotFound(tool_name.into())),
-        }
+    /// Get tool references for passing into inference engines
+    fn tool_refs(&self) -> Vec<&dyn Tool> {
+        self.tools().values().map(|tool| tool.as_ref()).collect()
     }
 }
 

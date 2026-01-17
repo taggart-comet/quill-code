@@ -1,5 +1,6 @@
 use crate::domain::tools::ToolResult;
 use serde::{Deserialize, Serialize};
+use crate::domain::{prompting, ModelType};
 
 /// Types of steps that can occur in an execution chain
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +33,12 @@ pub struct ChainStep {
     pub summary: String,
     pub context_payload: String,
     pub input_payload: String,
+    #[serde(default)]
+    pub tool_name: Option<String>,
+    #[serde(default)]
+    pub tool_output: Option<String>,
+    #[serde(default)]
+    pub is_successful: Option<bool>,
 }
 
 impl ChainStep {
@@ -42,10 +49,16 @@ impl ChainStep {
         }
         let mut context_payload = String::new();
         let mut input_payload = String::new();
+        let mut tool_name = None;
+        let mut tool_output = None;
+        let mut is_successful = None;
         if let Some(tr) = tool_result {
             summary = tr.summary();
             context_payload = tr.output_string();
             input_payload = tr.input_string();
+            tool_name = Some(tr.tool_name().to_string());
+            tool_output = Some(tr.output_raw().to_string());
+            is_successful = Some(tr.is_successful());
         }
 
         Self {
@@ -53,6 +66,13 @@ impl ChainStep {
             summary,
             context_payload,
             input_payload,
+            tool_name,
+            tool_output,
+            is_successful,
         }
+    }
+
+    pub fn get_output(&self, model_type: ModelType) -> String {
+        prompting::get_tool_result(model_type, self.clone())
     }
 }

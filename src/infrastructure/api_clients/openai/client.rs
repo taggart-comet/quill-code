@@ -21,14 +21,18 @@ pub enum OpenAIClientError {
 impl std::fmt::Display for OpenAIClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            OpenAIClientError::Api { status, .. } => {
-                write!(f, "OpenAI API error (status={})", status)
+            OpenAIClientError::Api { status, body } => {
+                write!(f, "OpenAI API error (status={}, body={})", status, body)
             }
-            OpenAIClientError::Deserialize { source, .. } => {
-                write!(f, "Failed to deserialize OpenAI response: {}", source)
+            OpenAIClientError::Deserialize { source, body } => {
+                write!(
+                    f,
+                    "Failed to deserialize OpenAI response: {} (body={})",
+                    source, body
+                )
             }
-            OpenAIClientError::NoText { .. } => {
-                write!(f, "No output_text found in OpenAI response")
+            OpenAIClientError::NoText { body } => {
+                write!(f, "No output_text found in OpenAI response (body={})", body)
             }
         }
     }
@@ -65,24 +69,45 @@ impl OpenAIClient {
         tools: &[&dyn crate::domain::tools::Tool],
         chain: &crate::domain::workflow::Chain,
     ) -> Result<LLMInferenceResult, Box<dyn Error + Send + Sync>> {
-        // Try once, retry on transient errors
-        match self.call_responses_api_inner(system_prompt, user_prompt, tools, chain) {
-            Ok(result) => Ok(result),
-            Err(e) => {
-                // Check if it's a transient error worth retrying
-                let error_str = e.to_string();
-                if error_str.contains("error sending request")
-                    || error_str.contains("connection")
-                    || error_str.contains("timeout")
-                {
-                    log::warn!("OpenAI API request failed, retrying once: {}", error_str);
-                    std::thread::sleep(std::time::Duration::from_secs(2));
-                    self.call_responses_api_inner(system_prompt, user_prompt, tools, chain)
-                } else {
-                    Err(e)
+        let max_attempts = 3;
+        for attempt in 1..=max_attempts {
+            match self.call_responses_api_inner(system_prompt, user_prompt, tools, chain) {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    let error_str = e.to_string();
+                    let mut should_retry = error_str.contains("error sending request")
+                        || error_str.contains("connection")
+                        || error_str.contains("timeout");
+
+                    if let Some(OpenAIClientError::Api { status, .. }) =
+                        e.downcast_ref::<OpenAIClientError>()
+                    {
+                        let status_code = status.as_u16();
+                        should_retry = should_retry
+                            || status.is_server_error()
+                            || status_code == 429
+                            || status_code == 408
+                            || status_code == 409;
+                    }
+
+                    if should_retry && attempt < max_attempts {
+                        let backoff_secs = 2u64.saturating_mul(attempt as u64);
+                        log::warn!(
+                            "OpenAI API request failed, retrying (attempt {}/{}): {}",
+                            attempt,
+                            max_attempts,
+                            error_str
+                        );
+                        std::thread::sleep(std::time::Duration::from_secs(backoff_secs));
+                        continue;
+                    }
+
+                    return Err(e);
                 }
             }
         }
+
+        unreachable!("retry loop exits via return");
     }
 
     fn call_responses_api_inner(

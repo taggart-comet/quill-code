@@ -8,14 +8,20 @@ use std::sync::Arc;
 /// Service for running workflows on sessions
 pub struct SessionService {
     workflow: Workflow,
+    use_behavior_trees: bool,
     conn: Arc<Connection>,
 }
 
 impl SessionService {
     /// Create a new session service with default workflow
-    pub fn new(engine: Arc<dyn InferenceEngine>, conn: Arc<Connection>) -> Result<Self, String> {
+    pub fn new(
+        engine: Arc<dyn InferenceEngine>,
+        conn: Arc<Connection>,
+        use_behavior_trees: bool,
+    ) -> Result<Self, String> {
         Ok(Self {
             workflow: Workflow::new(engine)?,
+            use_behavior_trees,
             conn,
         })
     }
@@ -25,7 +31,7 @@ impl SessionService {
     /// Creates a new session_request, runs the workflow, and updates the request with the result
     /// Returns the execution chain
     pub fn run(
-        &self,
+        &mut self,
         session: &Session,
         prompt: &str,
         cancel: &CancellationToken,
@@ -45,7 +51,19 @@ impl SessionService {
         session_with_request.set_current_request(prompt.to_string());
 
         // Run the workflow
-        let result = match self.workflow.run(&mut session_with_request, cancel) {
+        let result: Result<Chain, WorkflowError> = if self.use_behavior_trees {
+            self.workflow.reset_chain();
+            self.workflow
+                .run_using_bt(&mut session_with_request, cancel)
+        } else {
+            self.workflow.reset_chain();
+            self.workflow
+                .run(&mut session_with_request, cancel, 128, None)
+                .map_err(ServiceError::Workflow)?;
+            Ok(self.workflow.chain().clone())
+        };
+
+        let result = match result {
             Ok(chain) => {
                 // Get summary and log from chain
                 let summary = chain.get_summary();

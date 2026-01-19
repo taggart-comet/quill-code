@@ -120,8 +120,11 @@ pub fn parse_tool_choice(llm_output: &str) -> Result<(String, String), Error> {
 
     let content = content.trim().strip_suffix("```").unwrap_or(content).trim();
 
+    // Wrap to allow multiple top-level nodes (e.g. <tool_name> + <input>)
+    let wrapped = format!("<root>{}</root>", content);
+
     // Parse the XML
-    let doc = roxmltree::Document::parse(content)
+    let doc = roxmltree::Document::parse(&wrapped)
         .map_err(|e| Error::Parse(format!("invalid xml: {}", e)))?;
 
     // Extract tool_name

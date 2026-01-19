@@ -1,4 +1,3 @@
-import pytest
 from cat import Cat, create_cat
 
 
@@ -46,3 +45,23 @@ def test_create_cat_helper():
     cat = create_cat("Simba", 2)
     assert isinstance(cat, Cat)
     assert cat.name == "Simba"
+
+
+def run_all_tests() -> None:
+    tests = [
+        test_cat_creation,
+        test_meow,
+        test_feed_changes_mood,
+        test_pet_when_neutral,
+        test_pet_when_happy,
+        test_describe,
+        test_create_cat_helper,
+    ]
+
+    for test in tests:
+        test()
+
+
+if __name__ == "__main__":
+    run_all_tests()
+    print("All tests passed!")

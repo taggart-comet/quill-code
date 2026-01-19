@@ -163,7 +163,7 @@ impl Tool for ShellExec {
     fn desc(&self) -> String {
         format!(
             r#"Use the `{}` tool to execute shell commands.
-Please DO NOT use it to read the full content of a file, this is not efficient, use other tools for this."#,
+Please DO NOT use it to read the full content of a file, this is not efficient, use `read_objects` tool for this."#,
             self.name()
         )
     }
@@ -188,7 +188,7 @@ impl ShellExec {
     /// Display warning and countdown before executing command
     #[cfg(not(test))]
     fn warn_and_wait(command: &str, work_dir: &std::path::Path) {
-        println!("\n\x1b[33m┌─ shell_exec COMMAND ─────────────────────────────\x1b[0m");
+        println!("\n\x1b[33m┌─ Action Approval: shell_exec ─────────────────────────────\x1b[0m");
         println!("\x1b[33m│\x1b[0m Command: \x1b[1m{}\x1b[0m", command);
         println!("\x1b[33m│\x1b[0m Workdir: {}", work_dir.display());
         println!("\x1b[33m│\x1b[0m");

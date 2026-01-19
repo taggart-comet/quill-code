@@ -2,8 +2,10 @@ mod domain;
 mod infrastructure;
 mod repository;
 mod utils;
+mod config;
 
 use clap::Parser;
+use config::AppConfig;
 use domain::{CancellationToken, Session, SessionService, StartupService};
 use infrastructure::{
     change_model, get_current_model_name, InfrastructureComponents, InfrastructureInitializer,
@@ -12,7 +14,7 @@ use rustyline::Cmd;
 use rustyline::Editor;
 use rustyline::KeyEvent;
 use std::env;
-use std::sync::Arc;
+use colored::Colorize;
 use utils::{handle_readline_error, Action, StatusBarHelper};
 
 #[derive(Parser)]
@@ -27,19 +29,21 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    if let Err(e) = run(args.debug) {
+    let config = AppConfig::new(args.debug);
+
+    if let Err(e) = run(config) {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }
 }
 
-fn run(debug: bool) -> Result<(), String> {
+fn run(config: AppConfig) -> Result<(), String> {
     // Initialize logging
     {
         let mut builder = env_logger::Builder::from_default_env();
 
         // Our crate logs: respect debug flag
-        if debug {
+        if config.debug {
             builder.filter_level(log::LevelFilter::Debug);
         } else {
             builder.filter_level(log::LevelFilter::Info);
@@ -52,16 +56,20 @@ fn run(debug: bool) -> Result<(), String> {
     }
 
     // Initialize infrastructure components
-    let infrastructure_initializer = InfrastructureInitializer::with_debug(debug);
+    let infrastructure_initializer = InfrastructureInitializer::with_debug(config.debug);
     let infra = infrastructure_initializer.initialize()?;
 
     println!("Application initialized. Type :q or press Ctrl+Q to exit.\n");
 
     // Start the REPL with infrastructure components
-    repl(infra, debug)
+    repl(infra, config.debug, config.use_behavior_trees)
 }
 
-fn repl(infra: InfrastructureComponents, debug: bool) -> Result<(), String> {
+fn repl(
+    infra: InfrastructureComponents,
+    debug: bool,
+    use_behavior_trees: bool,
+) -> Result<(), String> {
     // Get current model name for status bar
     let current_model_name =
         get_current_model_name(&infra.connection).unwrap_or_else(|_| "unknown".to_string());
@@ -74,7 +82,11 @@ fn repl(infra: InfrastructureComponents, debug: bool) -> Result<(), String> {
     // Bind Ctrl+Q to EOF (quit)
     rl.bind_sequence(KeyEvent::ctrl('q'), Cmd::EndOfFile);
 
-    let session_service = SessionService::new(infra.engine.clone(), infra.connection.clone())
+    let mut session_service = SessionService::new(
+        infra.engine.clone(),
+        infra.connection.clone(),
+        use_behavior_trees,
+    )
         .map_err(|e| format!("Failed to create session service: {}", e))?;
     let startup_service =
         StartupService::with_debug(debug, infra.engine.clone(), infra.connection.clone());
@@ -152,8 +164,12 @@ fn repl(infra: InfrastructureComponents, debug: bool) -> Result<(), String> {
                 // Run the session service (creates request, runs workflow, updates result)
                 match session_service.run(session, trimmed, &cancel_token) {
                     Ok(chain) => {
-                        println!("Ok> {}", chain.get_summary());
-                        println!("{}", chain.final_message().unwrap().to_string());
+                        println!("{} {}", "<Ok>".green(), chain.get_summary());
+                        if let Some(message) = chain.final_message() {
+                            println!("{}", message);
+                        } else if chain.is_failed {
+                            println!("{}", chain.fail_reason);
+                        }
                     }
                     Err(domain::session::ServiceError::Workflow(
                         domain::workflow::Error::Cancelled,

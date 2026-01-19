@@ -133,7 +133,7 @@ impl Tool for DiscoverObjects {
             "properties": {
                 "full_path_to_file": {
                     "type": "string",
-                    "description": "path to the source file"
+                    "description": "path to the source file, use `find_files` tool to determine the correct path to the file"
                 }
             },
             "required": ["full_path_to_file"],
@@ -143,7 +143,7 @@ impl Tool for DiscoverObjects {
 
     fn desc(&self) -> String {
         format!(
-            "Use the `{}` tool to discover functions, classes, structs in a source file.",
+            "Use the `{}` tool to discover exact names for functions, classes, structs in a source file.",
             self.name()
         )
     }

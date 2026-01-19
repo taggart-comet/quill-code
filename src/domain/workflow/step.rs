@@ -9,10 +9,8 @@ pub enum StepType {
     ToolCall,
     /// User interrupted the workflow (Ctrl+C)
     UserInterruption,
-    /// A todo item was created
-    TodoCreation,
-    /// A todo item was updated
-    TodoUpdate,
+    /// Signifies that a step in the behavior tree was completed
+    BehaviorTreeStepPassed
 }
 
 impl StepType {
@@ -20,8 +18,7 @@ impl StepType {
         match self {
             StepType::ToolCall => "tool_call",
             StepType::UserInterruption => "user_interruption",
-            StepType::TodoCreation => "todo_creation",
-            StepType::TodoUpdate => "todo_update",
+            StepType::BehaviorTreeStepPassed => "behavior_tree_step_passed",
         }
     }
 }
@@ -73,6 +70,12 @@ impl ChainStep {
     }
 
     pub fn get_output(&self, model_type: ModelType) -> String {
-        prompting::get_tool_result(model_type, self.clone())
+        if self.step_type == StepType::ToolCall.as_str() {
+            return prompting::get_tool_result(model_type, self.clone());
+        }
+
+        let mut output = format!("Previous step `{}`: {}", self.step_type, self.input_payload);
+        output.push_str(&format!("\nStep output: {}", self.summary));
+        output
     }
 }

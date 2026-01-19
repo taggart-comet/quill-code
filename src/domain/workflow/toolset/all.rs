@@ -3,11 +3,11 @@ use crate::domain::workflow::toolset::Toolset;
 use std::collections::HashMap;
 
 /// General toolset containing read-only and utility tools
-pub struct GeneralToolset {
+pub struct AllToolset {
     tools: HashMap<String, Box<dyn Tool>>,
 }
 
-impl GeneralToolset {
+impl AllToolset {
     pub fn new() -> Self {
         let mut tools: HashMap<String, Box<dyn Tool>> = HashMap::new();
 
@@ -23,8 +23,8 @@ impl GeneralToolset {
         let structure = Box::new(Structure::new());
         tools.insert(structure.name().to_string(), structure);
 
-        let patch_file = Box::new(PatchFile::new());
-        tools.insert(patch_file.name().to_string(), patch_file);
+        let patch_files = Box::new(PatchFiles::new());
+        tools.insert(patch_files.name().to_string(), patch_files);
 
         let shell_exec = Box::new(crate::domain::tools::ShellExec::new());
         tools.insert(shell_exec.name().to_string(), shell_exec);
@@ -33,13 +33,7 @@ impl GeneralToolset {
     }
 }
 
-impl Default for GeneralToolset {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Toolset for GeneralToolset {
+impl Toolset for AllToolset {
     fn tools(&self) -> &HashMap<String, Box<dyn Tool>> {
         &self.tools
     }

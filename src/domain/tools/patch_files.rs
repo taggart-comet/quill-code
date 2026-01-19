@@ -9,47 +9,41 @@ use zenpatch::apply as apply_patch;
 use zenpatch::parser::text_to_patch::text_to_patch;
 use zenpatch::Vfs;
 
-pub struct PatchFile {
-    input: Mutex<Option<PatchFileInput>>,
+pub struct PatchFiles {
+    input: Mutex<Option<PatchFilesInput>>,
 }
 
 #[derive(Debug, Clone)]
-struct PatchFileInput {
+struct PatchFilesInput {
     raw: String,
-    file_path: String,
     patch: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct PatchFileInputJson {
-    file_path: String,
+struct PatchFilesInputJson {
     patch: String,
 }
 
-impl PatchFile {
+impl PatchFiles {
     pub fn new() -> Self {
         Self {
             input: Mutex::new(None),
         }
     }
 
-    fn parse_input_json(raw: &str) -> Result<PatchFileInput, Error> {
-        let parsed: PatchFileInputJson =
+    fn parse_input_json(raw: &str) -> Result<PatchFilesInput, Error> {
+        let parsed: PatchFilesInputJson =
             serde_json::from_str(raw).map_err(|e| Error::Parse(e.to_string()))?;
-        if parsed.file_path.is_empty() {
-            return Err(Error::Parse("file_path is required".into()));
-        }
         if parsed.patch.trim().is_empty() {
             return Err(Error::Parse("patch is required".into()));
         }
-        Ok(PatchFileInput {
+        Ok(PatchFilesInput {
             raw: raw.to_string(),
-            file_path: parsed.file_path,
             patch: parsed.patch,
         })
     }
 
-    fn load_input(&self) -> Result<PatchFileInput, Error> {
+    fn load_input(&self) -> Result<PatchFilesInput, Error> {
         self.input
             .lock()
             .unwrap()
@@ -58,9 +52,9 @@ impl PatchFile {
     }
 }
 
-impl Tool for PatchFile {
+impl Tool for PatchFiles {
     fn name(&self) -> &'static str {
-        "patch_file"
+        "patch_files"
     }
 
     fn parse_input(&self, input: String) -> Option<Error> {
@@ -98,24 +92,6 @@ impl Tool for PatchFile {
                 )
             }
         };
-
-        let input_path_match = actions.iter().any(|action| {
-            action.path == input.file_path
-                || action
-                    .new_path
-                    .as_deref()
-                    .is_some_and(|path| path == input.file_path.as_str())
-        });
-        if !input_path_match {
-            return ToolResult::error(
-                self.name().to_string(),
-                input.raw,
-                format!(
-                    "Patch does not reference file_path '{}'",
-                    input.file_path
-                ),
-            );
-        }
 
         let mut vfs = Vfs::new();
         let mut touched_paths: Vec<String> = Vec::new();
@@ -217,30 +193,36 @@ impl Tool for PatchFile {
         json!({
             "type": "object",
             "properties": {
-                "file_path": {
-                    "type": "string",
-                    "description": "path to the file being patched"
-                },
                 "patch": {
                     "type": "string",
-                    "description": "Begin Patch / Update File patch format content"
+                    "description": "Begin Patch / Update File patch content; can include multiple file updates. \
+Example: \
+*** Begin Patch\\n\
+*** Update File: foo.php\\n\
+@@\\n\
+-old\\n\
++new\\n\
+*** Update File: bar.md\\n\
+@@\\n\
+-Old title\\n\
++New title\\n\
+*** End Patch"
                 }
             },
-            "required": ["file_path", "patch"],
-            "additionalProperties": false
+            "required": ["patch"]
         })
     }
 
     fn desc(&self) -> String {
         format!(
-            "Use the `{name}` tool to edit files using the Begin Patch / Update File patch format.",
+            "Use the `{name}` tool to edit one or more files using the Begin Patch / Update File patch format.",
             name = self.name()
         )
     }
 
 }
 
-impl Default for PatchFile {
+impl Default for PatchFiles {
     fn default() -> Self {
         Self::new()
     }
@@ -261,7 +243,7 @@ mod tests {
 
         let request = VirtualRequest::new("test", temp.path());
 
-        let tool = PatchFile::new();
+        let tool = PatchFiles::new();
         let patch = "*** Begin Patch\n\
 *** Update File: test.txt\n\
 @@\n\
@@ -269,7 +251,7 @@ mod tests {
 +line2_modified\n\
 *** End Patch";
         let input = format!(
-            "{{\"file_path\":\"test.txt\",\"patch\":\"{}\"}}",
+            "{{\"patch\":\"{}\"}}",
             patch.replace('\n', "\\n").replace('"', "\\\"")
         );
         assert!(tool.parse_input(input).is_none());
@@ -298,7 +280,7 @@ mod tests {
 
         let request = VirtualRequest::new("test", temp.path());
 
-        let tool = PatchFile::new();
+        let tool = PatchFiles::new();
         let patch = "*** Begin Patch\n\
 *** Update File: code.py\n\
 @@\n\
@@ -309,7 +291,7 @@ mod tests {
 +    pass\n\
 *** End Patch";
         let input = format!(
-            "{{\"file_path\":\"code.py\",\"patch\":\"{}\"}}",
+            "{{\"patch\":\"{}\"}}",
             patch.replace('\n', "\\n").replace('"', "\\\"")
         );
         assert!(tool.parse_input(input).is_none());
@@ -331,8 +313,8 @@ mod tests {
 
         let request = VirtualRequest::new("test", temp.path());
 
-        let tool = PatchFile::new();
-        let input = "{\"file_path\":\"test.txt\",\"patch\":\"not a patch\"}".to_string();
+        let tool = PatchFiles::new();
+        let input = "{\"patch\":\"not a patch\"}".to_string();
         assert!(tool.parse_input(input).is_none());
         let result = tool.work(&request);
 

@@ -1,8 +1,10 @@
-use crate::domain::prompting;
+use crate::domain::{prompting, SessionRequest};
+use crate::domain::bt::BTStepNodeInterface;
 use crate::domain::session::Request;
-use crate::domain::workflow::Chain;
+use crate::domain::workflow::{Chain, ChainStep};
 use crate::domain::workflow::Toolset;
 use crate::domain::ModelType;
+use crate::domain::prompting::get_user_prompt;
 
 /// LLM prompt templates for the coding assistant
 ///
@@ -64,14 +66,27 @@ OUTPUT (XML ONLY):\n",
     }
 }
 
+pub fn get_bt_tree_step_prompt(model_type: ModelType, step: &dyn BTStepNodeInterface, request: &dyn Request) -> String {
+    if model_type == ModelType::OpenAI {
+        format!(
+            "Objective:\n{}\n\
+            Current action:\n{}\n.",
+            request.current_request(), step.prompt()
+        )
+    } else {
+        format!(
+            "{}\n{}", get_user_prompt(model_type, request), step.prompt()
+        )
+    }
+}
+
 pub fn get_system_prompt(model_type: ModelType) -> String {
     let (os_name, shell_name) = get_runtime_environment();
     if model_type == ModelType::OpenAI {
         format!(
-            "You are Drastis, a coding agent. \
+            "You are Drastis, a coding agent. \n\
 Use the available tools to gather context and make changes. \
-When using tools, pass JSON arguments that match their parameters. \
-If you call a tool, you MUST also include an output_text message explaining why. \
+When using tools, pass JSON arguments that match their parameters. \n\
 Runtime: os={}, shell={}.",
             os_name, shell_name
         )

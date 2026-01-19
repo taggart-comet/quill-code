@@ -4,6 +4,7 @@ pub mod session;
 pub mod startup;
 pub mod tools;
 pub mod workflow;
+mod bt;
 
 pub use project::Project;
 pub use session::service::SessionService;

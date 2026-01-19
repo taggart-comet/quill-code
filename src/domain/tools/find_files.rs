@@ -262,9 +262,14 @@ mod tests {
     #[test]
     fn test_resolve_search_root_with_input() {
         // When input root is provided, validate it's within project root
-        let result = FindFiles::resolve_search_root(Some("/tmp/subdir"), Path::new("/tmp"));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let subdir = tmp_dir.path().join("subdir");
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        let result =
+            FindFiles::resolve_search_root(subdir.to_str(), tmp_dir.path());
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), PathBuf::from("/tmp/subdir"));
+        assert_eq!(result.unwrap(), subdir);
     }
 
     #[test]

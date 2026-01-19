@@ -1,7 +1,7 @@
 use crate::domain::tools::Tool;
 use serde::Serialize;
 use serde_json::Value;
-use crate::domain::ModelType;
+use crate::domain::{Chain, ModelType};
 
 #[derive(Debug, Serialize)]
 pub struct RequestDTO {
@@ -93,21 +93,17 @@ impl InputDto {
         }
     }
 
-    fn from_chain(chain: &crate::domain::workflow::Chain) -> Vec<Self> {
+    fn from_chain(chain: &Chain) -> Vec<Self> {
         chain
             .steps
             .iter()
-            .filter(|step| {
-                step.step_type == crate::domain::workflow::step::StepType::ToolCall.as_str()
-            })
-            .filter_map(|step| {
-                let tool_name = step.tool_name.as_ref()?;
+            .map(|step| {
                 let status = if step.is_successful.unwrap_or(false) {
                     "completed"
                 } else {
                     "failed"
                 };
-                Some(Self {
+                Self {
                     content: vec![InputContent {
                         kind: "input_text".to_string(),
                         text: step.get_output(ModelType::OpenAI),
@@ -115,7 +111,7 @@ impl InputDto {
                     role: ROLE_SYSTEM.to_string(),
                     kind: "message".to_string(),
                     status: status.to_string(),
-                })
+                }
             })
             .collect()
     }

@@ -1,13 +1,13 @@
 mod discover_objects;
 mod find_files;
-mod patch_file;
+mod patch_files;
 mod read_objects;
 mod shell_exec;
 mod structure;
 
 pub use discover_objects::DiscoverObjects;
 pub use find_files::FindFiles;
-pub use patch_file::PatchFile;
+pub use patch_files::PatchFiles;
 pub use read_objects::ReadObjects;
 pub use shell_exec::ShellExec;
 pub use structure::Structure;
@@ -99,14 +99,19 @@ impl ToolResult {
 ///
 /// Example:
 /// ```rust
+/// use serde::Serialize;
+/// use drastis::domain::tools::{serialize_output, ToolResult};
+///
 /// #[derive(Serialize)]
 /// struct MyOutput {
 ///     result: String,
 /// }
 ///
 /// let output = MyOutput { result: "success".to_string() };
-/// let xml = serialize_output(&output)?;
-/// ToolResult::ok(tool_name, input, xml)
+/// let xml = serialize_output(&output).unwrap();
+/// let tool_name = "my_tool".to_string();
+/// let input = "<input></input>".to_string();
+/// let _result = ToolResult::ok(tool_name, input, xml);
 /// ```
 pub fn serialize_output<T>(value: &T) -> Result<String, Error>
 where
@@ -139,7 +144,7 @@ pub fn build_tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
         "read_objects" => Some(Box::new(ReadObjects::new())),
         "find_files" => Some(Box::new(FindFiles::new())),
         "structure" => Some(Box::new(Structure::new())),
-        "patch_file" => Some(Box::new(PatchFile::new())),
+        "patch_files" => Some(Box::new(PatchFiles::new())),
         "shell_exec" => Some(Box::new(ShellExec::new())),
         _ => None,
     }

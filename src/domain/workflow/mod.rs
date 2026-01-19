@@ -1,12 +1,11 @@
 pub mod chain;
 pub mod step;
 pub mod toolset;
-pub mod toolsets;
 pub mod workflow;
 
 pub use chain::Chain;
 pub use step::{ChainStep, StepType};
-pub use toolset::{GeneralToolset, Toolset};
+pub use toolset::{AllToolset, EditToolset, ReadToolset, Toolset};
 pub use workflow::Workflow;
 
 use std::sync::atomic::{AtomicBool, Ordering};

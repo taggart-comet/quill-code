@@ -1,4 +1,4 @@
-use super::{Error, Tool, ToolResult};
+use super::{DiscoverObjects, Error, Tool, ToolResult};
 use crate::domain::session::Request;
 use crate::utils::{Lang, ObjectKind, ParsedObject, UniversalParser};
 use serde::Deserialize;
@@ -22,8 +22,7 @@ struct ReadObjectsInput {
 #[derive(Debug, Deserialize)]
 struct ReadObjectsInputJson {
     path: String,
-    names: Vec<String>,
-    kind: Option<String>,
+    query: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -63,18 +62,6 @@ impl ObjectQuery {
             None => name_matches,
         }
     }
-}
-
-#[derive(Serialize)]
-struct ReadObjectsOutput {
-    language: String,
-    object_not_found: bool,
-    results: HashMap<String, ObjectContent>,
-}
-
-#[derive(Serialize)]
-struct ErrorOutput {
-    error: String,
 }
 
 impl ReadObjects {
@@ -130,25 +117,18 @@ impl ReadObjects {
             return Err(Error::Parse("path is required".into()));
         }
 
-        if parsed.names.is_empty() {
-            return Err(Error::Parse("names is required".into()));
-        }
-
-        let kind = parsed.kind.as_deref().and_then(ObjectKind::from_str);
-        if parsed.kind.is_some() && kind.is_none() {
-            return Err(Error::Parse("invalid kind".into()));
+        let mut names = Self::parse_query(&parsed.query);
+        names.retain(|name| !name.trim().is_empty());
+        if names.is_empty() {
+            return Err(Error::Parse("query is required".into()));
         }
 
         let mut queries = Vec::new();
-        for name in parsed.names {
-            if name.is_empty() {
+        for name in names {
+            if name.trim().is_empty() {
                 return Err(Error::Parse("names cannot include empty strings".into()));
             }
-            let query = match kind {
-                Some(kind) => ObjectQuery::with_kind(kind, &name),
-                None => ObjectQuery::new(&name),
-            };
-            queries.push(query);
+            queries.push(ObjectQuery::new(&name));
         }
 
         Ok(ReadObjectsInput {
@@ -164,6 +144,14 @@ impl ReadObjects {
             .unwrap()
             .clone()
             .ok_or_else(|| Error::Parse("input not parsed".into()))
+    }
+
+    fn parse_query(query: &str) -> Vec<String> {
+        query
+            .replace(',', " ")
+            .split_whitespace()
+            .map(|part| part.trim().to_string())
+            .collect()
     }
 
     fn format_output(lang: Lang, results: HashMap<String, ObjectContent>) -> String {
@@ -234,27 +222,20 @@ impl Tool for ReadObjects {
                     "type": "string",
                     "description": "path to the source file"
                 },
-                "names": {
-                    "type": "array",
-                    "description": "object names to find",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "kind": {
+                "query": {
                     "type": "string",
-                    "description": "optional: apply one kind to all names (function, class, struct, etc.)"
+                    "description": "comma- or space-separated object names. Example: \"main, Config, Parser\""
                 }
             },
-            "required": ["path", "names"],
+            "required": ["path", "query"],
             "additionalProperties": false
         })
     }
 
     fn desc(&self) -> String {
         format!(
-            "Use the `{}` tool to read source code of specific objects from a file.",
-            self.name()
+            "Use the `{}` tool to read source code of specific objects from a file. To determine correct properties to use for `{}`, use the `discover_objects` tool first.",
+            self.name(), self.name()
         )
     }
 
@@ -354,7 +335,7 @@ pub struct Parser {}
         std::fs::write(&file_path, source).unwrap();
 
         let input_json = format!(
-            r#"{{"path":"{}","names":["main","Config","Parser"]}}"#,
+            r#"{{"path":"{}","query":"main, Config, Parser"}}"#,
             file_path.display()
         );
 
@@ -372,32 +353,16 @@ pub struct Parser {}
     }
 
     #[test]
-    fn test_parse_input_invalid_kind() {
+    fn test_parse_input_missing_query() {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.rs");
         std::fs::write(&file_path, "pub fn main() {}").unwrap();
 
-        let input_json = format!(
-            r#"{{"path":"{}","names":["main"],"kind":"not_a_kind"}}"#,
-            file_path.display()
-        );
+        let input_json = format!(r#"{{"path":"{}","query":""}}"#, file_path.display());
 
         let tool = ReadObjects::new();
         let err = tool.parse_input(input_json).unwrap();
-        assert!(err.to_string().contains("invalid kind"));
-    }
-
-    #[test]
-    fn test_parse_input_missing_names() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let file_path = temp_dir.path().join("test.rs");
-        std::fs::write(&file_path, "pub fn main() {}").unwrap();
-
-        let input_json = format!(r#"{{"path":"{}","names":[]}}"#, file_path.display());
-
-        let tool = ReadObjects::new();
-        let err = tool.parse_input(input_json).unwrap();
-        assert!(err.to_string().contains("names is required"));
+        assert!(err.to_string().contains("query is required"));
     }
 
     #[test]

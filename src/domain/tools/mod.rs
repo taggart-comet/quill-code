@@ -4,6 +4,7 @@ mod patch_files;
 mod read_objects;
 mod shell_exec;
 mod structure;
+mod web_search;
 
 pub use discover_objects::DiscoverObjects;
 pub use find_files::FindFiles;
@@ -11,21 +12,28 @@ pub use patch_files::PatchFiles;
 pub use read_objects::ReadObjects;
 pub use shell_exec::ShellExec;
 pub use structure::Structure;
+pub use web_search::WebSearch;
 
 use crate::domain::session::Request;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("invalid xml: {0}")]
-    InvalidXml(String),
-
     #[error("parse error: {0}")]
     Parse(String),
 
     #[error("io error: {0}")]
     Io(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileChange {
+    pub path: String,
+    pub added_lines: u32,
+    pub deleted_lines: u32,
 }
 
 pub struct ToolResult {
@@ -34,6 +42,7 @@ pub struct ToolResult {
     is_successful: bool,
     output: String,
     error_message: String,
+    file_changes: Option<Vec<FileChange>>,
 }
 
 impl ToolResult {
@@ -44,6 +53,7 @@ impl ToolResult {
             is_successful: true,
             output,
             error_message: String::new(),
+            file_changes: None,
         }
     }
 
@@ -54,7 +64,13 @@ impl ToolResult {
             is_successful: false,
             output: String::new(),
             error_message: message.into(),
+            file_changes: None,
         }
+    }
+
+    pub fn with_file_changes(mut self, changes: Vec<FileChange>) -> Self {
+        self.file_changes = Some(changes);
+        self
     }
 
     pub fn output_string(&self) -> String {
@@ -93,41 +109,10 @@ impl ToolResult {
             format!("Tool `{}` failed: {}", self.tool_name, self.error_message)
         }
     }
-}
 
-/// Helper function to serialize a struct to XML string for tool outputs
-///
-/// Example:
-/// ```rust
-/// use serde::Serialize;
-/// use drastis::domain::tools::{serialize_output, ToolResult};
-///
-/// #[derive(Serialize)]
-/// struct MyOutput {
-///     result: String,
-/// }
-///
-/// let output = MyOutput { result: "success".to_string() };
-/// let xml = serialize_output(&output).unwrap();
-/// let tool_name = "my_tool".to_string();
-/// let input = "<input></input>".to_string();
-/// let _result = ToolResult::ok(tool_name, input, xml);
-/// ```
-pub fn serialize_output<T>(value: &T) -> Result<String, Error>
-where
-    T: serde::Serialize,
-{
-    quick_xml::se::to_string(value)
-        .map_err(|e| Error::Parse(format!("Failed to serialize to XML: {}", e)))
-}
-
-pub fn escape_xml(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('\"', "&quot;")
-        .replace('\'', "&apos;")
+    pub fn file_changes(&self) -> Option<&[FileChange]> {
+        self.file_changes.as_deref()
+    }
 }
 
 pub trait Tool: Send + Sync {
@@ -136,6 +121,18 @@ pub trait Tool: Send + Sync {
     fn work(&self, request: &dyn Request) -> ToolResult;
     fn parameters(&self) -> Value;
     fn desc(&self) -> String;
+    fn get_input(&self) -> String;
+
+    // Permission-related methods
+    fn get_command(&self, _request: &dyn Request) -> Option<String> {
+        None
+    }
+    fn get_affected_paths(&self, _request: &dyn Request) -> Vec<PathBuf> {
+        vec![]
+    }
+    fn is_read_only(&self) -> bool {
+        false
+    }
 }
 
 pub fn build_tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
@@ -146,6 +143,7 @@ pub fn build_tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
         "structure" => Some(Box::new(Structure::new())),
         "patch_files" => Some(Box::new(PatchFiles::new())),
         "shell_exec" => Some(Box::new(ShellExec::new())),
+        "web_search" => Some(Box::new(WebSearch::new())),
         _ => None,
     }
 }

@@ -160,32 +160,6 @@ impl ObjectKind {
         }
     }
 
-    /// Parse a string representation of an object kind
-    /// Returns None if the string doesn't match any known kind
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "function" | "fn" | "func" | "def" => Some(ObjectKind::Function),
-            "method" => Some(ObjectKind::Method),
-            "class" => Some(ObjectKind::Class),
-            "struct" => Some(ObjectKind::Struct),
-            "enum" => Some(ObjectKind::Enum),
-            "interface" => Some(ObjectKind::Interface),
-            "trait" => Some(ObjectKind::Trait),
-            "impl" => Some(ObjectKind::Impl),
-            "module" | "mod" => Some(ObjectKind::Module),
-            "const" | "constant" => Some(ObjectKind::Constant),
-            "var" | "variable" => Some(ObjectKind::Variable),
-            "type" => Some(ObjectKind::Type),
-            "macro" => Some(ObjectKind::Macro),
-            "import" => Some(ObjectKind::Import),
-            "export" => Some(ObjectKind::Export),
-            "property" => Some(ObjectKind::Property),
-            "field" => Some(ObjectKind::Field),
-            "section" => Some(ObjectKind::Section),
-            "rule" => Some(ObjectKind::Rule),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -349,8 +323,6 @@ pub struct ParsedObject {
     pub kind: ObjectKind,
     pub line_start: usize,
     pub line_end: usize,
-    pub byte_start: usize,
-    pub byte_end: usize,
     pub visibility: Option<String>,
 }
 
@@ -363,10 +335,6 @@ impl TreeSitterParser {
         Self {
             parser: Parser::new(),
         }
-    }
-
-    pub fn supports(path: &str) -> bool {
-        Lang::from_path(path).is_some()
     }
 
     pub fn parse(&mut self, source: &str, lang: Lang) -> Result<Vec<ParsedObject>, String> {
@@ -439,8 +407,6 @@ impl TreeSitterParser {
             kind: mapping.kind,
             line_start: node.start_position().row + 1,
             line_end: node.end_position().row + 1,
-            byte_start: node.start_byte(),
-            byte_end: node.end_byte(),
             visibility,
         })
     }

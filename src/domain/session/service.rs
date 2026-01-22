@@ -1,7 +1,10 @@
 use super::session::Session;
+use crate::domain::permissions::store::SqlitePermissionStore;
+use crate::domain::permissions::{PermissionChecker, PermissionConfig, PermissionPrompter};
 use crate::domain::workflow::{CancellationToken, Chain, Error as WorkflowError, Workflow};
-use crate::infrastructure::InferenceEngine;
-use crate::repository::SessionRequestsRepository;
+use crate::domain::UserSettings;
+use crate::infrastructure::{EventBus, InferenceEngine};
+use crate::repository::{ModelsRepository, SessionRequestsRepository, UserSettingsRepository};
 use rusqlite::Connection;
 use std::sync::Arc;
 
@@ -10,19 +13,34 @@ pub struct SessionService {
     workflow: Workflow,
     use_behavior_trees: bool,
     conn: Arc<Connection>,
+    event_bus: Arc<EventBus>,
 }
 
 impl SessionService {
-    /// Create a new session service with default workflow
-    pub fn new(
+    pub fn new_with_permissions_and_prompter(
         engine: Arc<dyn InferenceEngine>,
         conn: Arc<Connection>,
         use_behavior_trees: bool,
+        permission_config: PermissionConfig,
+        prompter: Arc<dyn PermissionPrompter>,
+        event_bus: Arc<EventBus>,
     ) -> Result<Self, String> {
+        let permission_store = Arc::new(SqlitePermissionStore::new(conn.clone()));
+        let permission_checker = Arc::new(PermissionChecker::new_with_prompter(
+            permission_store,
+            permission_config,
+            prompter,
+        ));
+
+        let workflow = Workflow::new(engine, permission_checker).map_err(
+            |err| format!("Failed to create workflow: {}", err),
+        )?;
+
         Ok(Self {
-            workflow: Workflow::new(engine)?,
+            workflow,
             use_behavior_trees,
             conn,
+            event_bus,
         })
     }
 
@@ -36,10 +54,22 @@ impl SessionService {
         prompt: &str,
         cancel: &CancellationToken,
     ) -> Result<Chain, ServiceError> {
+        let settings_repo = UserSettingsRepository::new(&self.conn);
+        let settings_row = settings_repo
+            .get_current()
+            .map_err(|e| ServiceError::Repository(e))?;
+        let model_name = settings_row
+            .current_model_id
+            .and_then(|id| ModelsRepository::new(&self.conn).find_by_id(id).ok())
+            .flatten()
+            .and_then(|model| model.model_name);
+        let request_settings =
+            UserSettings::from(settings_row.clone()).with_current_model_name(model_name);
+
         // Create a new session request
         let requests_repo = SessionRequestsRepository::new(self.conn.clone());
         let request_row = requests_repo
-            .create(session.id(), prompt)
+            .create(session.id(), settings_row.id, prompt)
             .map_err(|e| ServiceError::Repository(e))?;
         let request_id = request_row.id;
 
@@ -49,18 +79,17 @@ impl SessionService {
         // For now, we'll create a temporary session with the current request set
         let mut session_with_request = session.clone();
         session_with_request.set_current_request(prompt.to_string());
+        session_with_request.set_current_user_settings(Some(request_settings));
 
         // Run the workflow
         let result: Result<Chain, WorkflowError> = if self.use_behavior_trees {
-            self.workflow.reset_chain();
             self.workflow
                 .run_using_bt(&mut session_with_request, cancel)
         } else {
-            self.workflow.reset_chain();
             self.workflow
                 .run(&mut session_with_request, cancel, 128, None)
                 .map_err(ServiceError::Workflow)?;
-            Ok(self.workflow.chain().clone())
+            Ok(self.workflow.get_chain().clone())
         };
 
         let result = match result {
@@ -76,6 +105,34 @@ impl SessionService {
                 requests_repo
                     .update_steps_log(request_id, &steps_log)
                     .map_err(|e| ServiceError::Repository(e))?;
+
+                // Aggregate file changes from patch_files steps
+                let file_changes: Vec<_> = chain
+                    .steps()
+                    .iter()
+                    .filter(|step| step.tool_name.as_deref() == Some("patch_files"))
+                    .filter_map(|step| step.file_changes.as_ref())
+                    .flatten()
+                    .cloned()
+                    .collect();
+
+                if !file_changes.is_empty() {
+                    let changes_json = serde_json::json!({
+                        "changes": file_changes.clone()
+                    })
+                    .to_string();
+                    requests_repo
+                        .update_file_changes(request_id, &changes_json)
+                        .map_err(|e| ServiceError::Repository(e))?;
+
+                    // Emit FileChangesEvent
+                    let _ = self.event_bus.agent_to_ui_tx.send(
+                        crate::infrastructure::AgentToUiEvent::FileChangesEvent {
+                            request_id,
+                            changes: file_changes,
+                        },
+                    );
+                }
 
                 Ok(chain)
             }

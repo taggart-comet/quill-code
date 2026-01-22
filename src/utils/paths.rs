@@ -9,10 +9,6 @@ pub fn is_within_root(path: &Path, root: &Path) -> bool {
     }
 }
 
-pub fn is_file_exists(path: &Path) -> bool {
-    path.exists() && path.is_file()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

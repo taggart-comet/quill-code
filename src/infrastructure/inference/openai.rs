@@ -2,16 +2,13 @@ use super::{InferenceEngine, LLMInferenceResult};
 use crate::domain::ModelType;
 use crate::infrastructure::api_clients::openai::OpenAIClient;
 use crate::infrastructure::InfaError;
-use openai_api_rust::completions::*;
 use openai_api_rust::models::ModelsApi;
 use openai_api_rust::*;
-use serde_json::{json, Value};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 pub struct OpenAIEngine {
     client: OpenAI,
     responses_client: OpenAIClient,
-    model: String,
 }
 
 impl OpenAIEngine {
@@ -24,7 +21,6 @@ impl OpenAIEngine {
         let engine = Arc::new(Self {
             client,
             responses_client,
-            model: model.to_string(),
         });
 
         Ok(engine as Arc<dyn InferenceEngine>)
@@ -39,7 +35,6 @@ impl OpenAIEngine {
         let engine = Self {
             client,
             responses_client,
-            model: model.to_string(),
         };
 
         Ok(engine)

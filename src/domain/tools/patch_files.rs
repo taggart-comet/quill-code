@@ -1,9 +1,10 @@
 use crate::domain::session::Request;
-use crate::domain::tools::{Error, Tool, ToolResult};
+use crate::domain::tools::{Error, FileChange, Tool, ToolResult};
 use serde::Deserialize;
 use serde_json::json;
+use similar::TextDiff;
 use std::fs;
-use std::path::Component;
+use std::path::{Component, PathBuf};
 use std::sync::Mutex;
 use zenpatch::apply as apply_patch;
 use zenpatch::parser::text_to_patch::text_to_patch;
@@ -74,11 +75,7 @@ impl Tool for PatchFiles {
         let input = match self.load_input() {
             Ok(input) => input,
             Err(e) => {
-                return ToolResult::error(
-                    self.name().to_string(),
-                    String::new(),
-                    e.to_string(),
-                )
+                return ToolResult::error(self.name().to_string(), String::new(), e.to_string())
             }
         };
 
@@ -95,6 +92,8 @@ impl Tool for PatchFiles {
 
         let mut vfs = Vfs::new();
         let mut touched_paths: Vec<String> = Vec::new();
+        let mut original_contents: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         for action in &actions {
             if !touched_paths.contains(&action.path) {
                 touched_paths.push(action.path.clone());
@@ -124,6 +123,7 @@ impl Tool for PatchFiles {
             if fs_path.exists() {
                 match fs::read_to_string(&fs_path) {
                     Ok(content) => {
+                        original_contents.insert(path.clone(), content.clone());
                         vfs.insert(path.clone(), content);
                     }
                     Err(e) => {
@@ -152,10 +152,10 @@ impl Tool for PatchFiles {
             let fs_path = project_root.join(path);
             if let Some(content) = new_vfs.get(path) {
                 if let Some(parent) = fs_path.parent() {
-                if let Err(e) = fs::create_dir_all(parent) {
-                    return ToolResult::error(
-                        self.name().to_string(),
-                        input.raw,
+                    if let Err(e) = fs::create_dir_all(parent) {
+                        return ToolResult::error(
+                            self.name().to_string(),
+                            input.raw,
                             format!(
                                 "Failed to create parent directories for '{}': {}",
                                 fs_path.display(),
@@ -182,11 +182,49 @@ impl Tool for PatchFiles {
             }
         }
 
-        ToolResult::ok(
+        // Compute file changes
+        let mut file_changes = Vec::new();
+        for path in &touched_paths {
+            let original = original_contents.get(path);
+            let new_content = new_vfs.get(path);
+
+            let (added_lines, deleted_lines) =
+                if let (Some(orig), Some(new)) = (original, new_content) {
+                    if orig != new {
+                        compute_line_diff(orig, new)
+                    } else {
+                        (0, 0) // No change
+                    }
+                } else if original.is_some() && new_content.is_none() {
+                    // Deleted: count original lines as deleted
+                    (0, original.unwrap().lines().count() as u32)
+                } else if original.is_none() && new_content.is_some() {
+                    // Added: count new lines as added
+                    (new_content.unwrap().lines().count() as u32, 0)
+                } else {
+                    (0, 0) // No content change
+                };
+
+            if added_lines > 0 || deleted_lines > 0 {
+                file_changes.push(FileChange {
+                    path: path.clone(),
+                    added_lines,
+                    deleted_lines,
+                });
+            }
+        }
+
+        let mut result = ToolResult::ok(
             self.name().to_string(),
             input.raw,
             "Patch applied successfully".to_string(),
-        )
+        );
+
+        if !file_changes.is_empty() {
+            result = result.with_file_changes(file_changes);
+        }
+
+        result
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -196,17 +234,17 @@ impl Tool for PatchFiles {
                 "patch": {
                     "type": "string",
                     "description": "Begin Patch / Update File patch content; can include multiple file updates. \
-Example: \
-*** Begin Patch\\n\
-*** Update File: foo.php\\n\
-@@\\n\
--old\\n\
-+new\\n\
-*** Update File: bar.md\\n\
-@@\\n\
--Old title\\n\
-+New title\\n\
-*** End Patch"
+        Example: \
+        *** Begin Patch\\n\
+        *** Update File: foo.php\\n\
+        @@\\n\
+        -old\\n\
+        +new\\n\
+        *** Update File: bar.md\\n\
+        @@\\n\
+        -Old title\\n\
+        +New title\\n\
+        *** End Patch"
                 }
             },
             "required": ["patch"]
@@ -220,6 +258,50 @@ Example: \
         )
     }
 
+    fn get_input(&self) -> String {
+        self.input
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|input| input.raw.clone())
+            .unwrap_or_default()
+    }
+
+    fn get_command(&self, _request: &dyn Request) -> Option<String> {
+        None // Patch files doesn't execute commands
+    }
+
+    fn get_affected_paths(&self, request: &dyn Request) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+
+        if let Ok(input) = self.load_input() {
+            // Parse the patch to extract affected paths
+            if let Ok(actions) = text_to_patch(&input.patch) {
+                for action in &actions {
+                    paths.push(request.project_root().join(&action.path));
+                    if let Some(ref new_path) = action.new_path {
+                        paths.push(request.project_root().join(new_path));
+                    }
+                }
+            }
+        }
+
+        paths
+    }
+}
+
+fn compute_line_diff(old: &str, new: &str) -> (u32, u32) {
+    let diff = TextDiff::from_lines(old, new);
+    let mut added = 0;
+    let mut deleted = 0;
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            similar::ChangeTag::Insert => added += 1,
+            similar::ChangeTag::Delete => deleted += 1,
+            similar::ChangeTag::Equal => {}
+        }
+    }
+    (added, deleted)
 }
 
 impl Default for PatchFiles {
@@ -231,8 +313,53 @@ impl Default for PatchFiles {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::session::VirtualRequest;
+    use crate::domain::session::{Request, SessionRequest};
+    use std::path::{Path, PathBuf};
     use tempfile::tempdir;
+
+    struct TestRequest {
+        root: PathBuf,
+        current_request: String,
+        history: Vec<SessionRequest>,
+        final_message: Option<String>,
+    }
+
+    impl TestRequest {
+        fn new(root: &Path) -> Self {
+            Self {
+                root: root.to_path_buf(),
+                current_request: "test".to_string(),
+                history: Vec::new(),
+                final_message: None,
+            }
+        }
+    }
+
+    impl Request for TestRequest {
+        fn history(&self) -> &[SessionRequest] {
+            &self.history
+        }
+
+        fn current_request(&self) -> &str {
+            &self.current_request
+        }
+
+        fn project_root(&self) -> &Path {
+            &self.root
+        }
+
+        fn user_settings(&self) -> Option<&crate::domain::UserSettings> {
+            None
+        }
+
+        fn project_id(&self) -> Option<i32> {
+            None
+        }
+
+        fn set_final_message(&mut self, message: String) {
+            self.final_message = Some(message);
+        }
+    }
 
     #[test]
     fn test_patch_file_simple_change() {
@@ -241,7 +368,7 @@ mod tests {
         let file_path = temp.path().join("test.txt");
         fs::write(&file_path, "line1\nline2\nline3\n").unwrap();
 
-        let request = VirtualRequest::new("test", temp.path());
+        let request = TestRequest::new(temp.path());
 
         let tool = PatchFiles::new();
         let patch = "*** Begin Patch\n\
@@ -278,7 +405,7 @@ mod tests {
         let file_path = temp.path().join("code.py");
         fs::write(&file_path, "def foo():\n    pass\n").unwrap();
 
-        let request = VirtualRequest::new("test", temp.path());
+        let request = TestRequest::new(temp.path());
 
         let tool = PatchFiles::new();
         let patch = "*** Begin Patch\n\
@@ -311,7 +438,7 @@ mod tests {
     fn test_patch_file_empty_patch() {
         let temp = tempdir().unwrap();
 
-        let request = VirtualRequest::new("test", temp.path());
+        let request = TestRequest::new(temp.path());
 
         let tool = PatchFiles::new();
         let input = "{\"patch\":\"not a patch\"}".to_string();

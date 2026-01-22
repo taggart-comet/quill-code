@@ -164,20 +164,16 @@ impl Tool for FindFiles {
         let input = match self.load_input() {
             Ok(input) => input,
             Err(e) => {
-                return ToolResult::error(
-                    self.name().to_string(),
-                    String::new(),
-                    e.to_string(),
-                )
+                return ToolResult::error(self.name().to_string(), String::new(), e.to_string())
             }
         };
 
         // Resolve and validate search root
         let search_root =
             match Self::resolve_search_root(input.root.as_deref(), request.project_root()) {
-            Ok(root) => root,
-            Err(e) => return ToolResult::error(self.name().to_string(), input.raw, e),
-        };
+                Ok(root) => root,
+                Err(e) => return ToolResult::error(self.name().to_string(), input.raw, e),
+            };
 
         // Check if search root exists
         if !search_root.exists() {
@@ -238,6 +234,38 @@ impl Tool for FindFiles {
         )
     }
 
+    fn get_input(&self) -> String {
+        self.input
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|input| input.raw.clone())
+            .unwrap_or_default()
+    }
+
+    fn get_affected_paths(&self, request: &dyn Request) -> Vec<PathBuf> {
+        match self.input.lock().unwrap().as_ref() {
+            Some(input) => {
+                let root_path = match input.root.as_deref() {
+                    Some(root) => {
+                        let path = PathBuf::from(root);
+                        if path.is_absolute() {
+                            path
+                        } else {
+                            request.project_root().join(path)
+                        }
+                    }
+                    None => request.project_root().to_path_buf(),
+                };
+                vec![root_path]
+            }
+            None => vec![],
+        }
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
 }
 
 impl Default for FindFiles {
@@ -266,8 +294,7 @@ mod tests {
         let subdir = tmp_dir.path().join("subdir");
         std::fs::create_dir_all(&subdir).unwrap();
 
-        let result =
-            FindFiles::resolve_search_root(subdir.to_str(), tmp_dir.path());
+        let result = FindFiles::resolve_search_root(subdir.to_str(), tmp_dir.path());
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), subdir);
     }

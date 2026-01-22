@@ -1,11 +1,13 @@
 pub mod chain;
 pub mod step;
+pub mod tool_runner;
 pub mod toolset;
 pub mod workflow;
 
 pub use chain::Chain;
-pub use step::{ChainStep, StepType};
-pub use toolset::{AllToolset, EditToolset, ReadToolset, Toolset};
+pub use step::ChainStep;
+pub use tool_runner::ToolRunner;
+pub use toolset::AllToolset;
 pub use workflow::Workflow;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,11 +31,6 @@ impl CancellationToken {
     /// Check if cancellation has been requested
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Relaxed)
-    }
-
-    /// Request cancellation
-    pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Relaxed);
     }
 
     /// Reset the token for reuse

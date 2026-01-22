@@ -1,16 +1,19 @@
 mod project;
+mod user_settings;
 pub mod prompting;
 pub mod session;
 pub mod startup;
 pub mod tools;
 pub mod workflow;
+pub mod permissions;
 mod bt;
 
 pub use project::Project;
 pub use session::service::SessionService;
 pub use session::{Session, SessionRequest};
-pub use startup::{StartupConfig, StartupService};
-pub use workflow::{CancellationToken, Chain, Workflow};
+pub use startup::StartupService;
+pub use user_settings::UserSettings;
+pub use workflow::{CancellationToken, Chain};
 
 /// Model type enum matching the inference engine types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

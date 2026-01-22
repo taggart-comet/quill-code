@@ -20,9 +20,10 @@ pub fn build_request_dto(
 
 pub fn build_llm_result(response: ResponseDTO) -> LLMInferenceResult {
     let (summary, tool_call) = response.extract_parts();
+    let raw_output = summary.clone();
     let mut final_summary = summary;
     let chosen_tool = tool_call.and_then(|call| {
-        let mut tool = build_tool_by_name(&call.name)?;
+        let tool = build_tool_by_name(&call.name)?;
         if let Some(err) = tool.parse_input(call.arguments) {
             if final_summary.is_empty() {
                 final_summary = format!("Tool input parse error: {}", err);
@@ -34,6 +35,7 @@ pub fn build_llm_result(response: ResponseDTO) -> LLMInferenceResult {
 
     LLMInferenceResult {
         summary: final_summary,
+        raw_output,
         chosen_tool,
     }
 }

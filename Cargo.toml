@@ -52,6 +52,14 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tempfile = "3.0"
 zenpatch = "0.1.0"
 colored = "3.1.1"
+chrono = { version = "0.4", features = ["serde"] }
+crossbeam-channel = "0.5"
+ratatui = "0.24" # Locked for ratatui-textarea compatibility.
+crossterm = "0.27"
+ratatui-textarea = "0.4.1"
+  openai-agents-tracing = { path = "crates/openai-agents-tracing-rust" }
+  similar = "2.6"
+  urlencoding = "2.1"
 
 [dev-dependencies]
 

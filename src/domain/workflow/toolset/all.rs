@@ -29,6 +29,9 @@ impl AllToolset {
         let shell_exec = Box::new(crate::domain::tools::ShellExec::new());
         tools.insert(shell_exec.name().to_string(), shell_exec);
 
+        let web_search = Box::new(WebSearch::new());
+        tools.insert(web_search.name().to_string(), web_search);
+
         Self { tools }
     }
 }

@@ -1,0 +1,136 @@
+use rusqlite::{params, Connection, Row};
+
+#[derive(Debug, Clone)]
+pub struct UserSettingsRow {
+    pub id: i64,
+    pub openai_api_key: Option<String>,
+    pub openai_tracing_enabled: bool,
+    pub use_behavior_trees: bool,
+    pub current_model_id: Option<i64>,
+    pub web_search_enabled: bool,
+    pub brave_api_key: Option<String>,
+}
+
+impl UserSettingsRow {
+    fn from_row(row: &Row) -> Result<Self, rusqlite::Error> {
+        Ok(Self {
+            id: row.get(0)?,
+            openai_api_key: row.get(1)?,
+            openai_tracing_enabled: row.get::<_, i64>(2)? != 0,
+            use_behavior_trees: row.get::<_, i64>(3)? != 0,
+            current_model_id: row.get(4)?,
+            web_search_enabled: row.get::<_, i64>(5)? != 0,
+            brave_api_key: row.get(6)?,
+        })
+    }
+}
+
+pub struct UserSettingsRepository<'a> {
+    conn: &'a Connection,
+}
+
+impl<'a> UserSettingsRepository<'a> {
+    pub fn new(conn: &'a Connection) -> Self {
+        Self { conn }
+    }
+
+    pub fn get_current(&self) -> Result<UserSettingsRow, String> {
+        self.ensure_row()?;
+        self.get_by_id(1)?
+            .ok_or_else(|| "user_settings row not found".to_string())
+    }
+
+    pub fn get_by_id(&self, id: i64) -> Result<Option<UserSettingsRow>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, openai_api_key, openai_tracing_enabled, use_behavior_trees, current_model_id, web_search_enabled, brave_api_key FROM user_settings WHERE id = ?",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let result = stmt
+            .query_row(params![id], UserSettingsRow::from_row)
+            .optional()
+            .map_err(|e| e.to_string())?;
+
+        Ok(result)
+    }
+
+    pub fn update_openai_api_key(&self, api_key: Option<&str>) -> Result<(), String> {
+        self.ensure_row()?;
+        self.conn
+            .execute(
+                "UPDATE user_settings SET openai_api_key = ? WHERE id = 1",
+                params![api_key],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn update_openai_tracing_enabled(&self, enabled: bool) -> Result<(), String> {
+        self.update_bool("openai_tracing_enabled", enabled)
+    }
+
+    pub fn update_use_behavior_trees(&self, enabled: bool) -> Result<(), String> {
+        self.update_bool("use_behavior_trees", enabled)
+    }
+
+    pub fn update_current_model_id(&self, model_id: Option<i64>) -> Result<(), String> {
+        self.ensure_row()?;
+        self.conn
+            .execute(
+                "UPDATE user_settings SET current_model_id = ? WHERE id = 1",
+                params![model_id],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn update_web_search_enabled(&self, enabled: bool) -> Result<(), String> {
+        self.update_bool("web_search_enabled", enabled)
+    }
+
+    pub fn update_brave_api_key(&self, api_key: Option<&str>) -> Result<(), String> {
+        self.ensure_row()?;
+        self.conn
+            .execute(
+                "UPDATE user_settings SET brave_api_key = ? WHERE id = 1",
+                params![api_key],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn update_bool(&self, column: &str, enabled: bool) -> Result<(), String> {
+        self.ensure_row()?;
+        let sql = format!("UPDATE user_settings SET {} = ? WHERE id = 1", column);
+        self.conn
+            .execute(&sql, params![if enabled { 1 } else { 0 }])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn ensure_row(&self) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO user_settings (id, openai_tracing_enabled, use_behavior_trees, web_search_enabled) VALUES (1, 0, 0, 0)",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+trait OptionalExt<T> {
+    fn optional(self) -> Result<Option<T>, rusqlite::Error>;
+}
+
+impl<T> OptionalExt<T> for Result<T, rusqlite::Error> {
+    fn optional(self) -> Result<Option<T>, rusqlite::Error> {
+        match self {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+}

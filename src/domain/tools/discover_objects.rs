@@ -4,6 +4,7 @@ use crate::utils::{Lang, ParsedObject, UniversalParser};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 pub struct DiscoverObjects {
@@ -31,11 +32,6 @@ impl DiscoverObjects {
     pub fn parse_file(file_path: &str) -> Result<(Lang, Vec<ParsedObject>), String> {
         let mut parser = UniversalParser::new();
         parser.parse_file(file_path)
-    }
-
-    fn parse_source(source: &str, lang: Lang) -> Result<Vec<ParsedObject>, String> {
-        let mut parser = UniversalParser::new();
-        parser.parse(source, lang)
     }
 
     fn format_output(lang: Lang, objects: &[ParsedObject]) -> String {
@@ -107,22 +103,16 @@ impl Tool for DiscoverObjects {
         let input = match self.load_input() {
             Ok(input) => input,
             Err(e) => {
-                return ToolResult::error(
-                    self.name().to_string(),
-                    String::new(),
-                    e.to_string(),
-                )
+                return ToolResult::error(self.name().to_string(), String::new(), e.to_string())
             }
         };
 
         match Self::parse_file(&input.full_path_to_file) {
-            Ok((lang, objects)) => {
-                ToolResult::ok(
-                    self.name().to_string(),
-                    input.raw,
-                    Self::format_output(lang, &objects),
-                )
-            }
+            Ok((lang, objects)) => ToolResult::ok(
+                self.name().to_string(),
+                input.raw,
+                Self::format_output(lang, &objects),
+            ),
             Err(e) => ToolResult::error(self.name().to_string(), input.raw, e.to_string()),
         }
     }
@@ -148,6 +138,32 @@ impl Tool for DiscoverObjects {
         )
     }
 
+    fn get_input(&self) -> String {
+        self.input
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|input| input.raw.clone())
+            .unwrap_or_default()
+    }
+
+    fn get_affected_paths(&self, request: &dyn Request) -> Vec<PathBuf> {
+        match self.input.lock().unwrap().as_ref() {
+            Some(input) => {
+                let path = PathBuf::from(&input.full_path_to_file);
+                if path.is_absolute() {
+                    vec![path]
+                } else {
+                    vec![request.project_root().join(path)]
+                }
+            }
+            None => vec![],
+        }
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
 }
 
 impl Default for DiscoverObjects {
@@ -159,6 +175,8 @@ impl Default for DiscoverObjects {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn test_parse_rust_source() {
@@ -190,11 +208,14 @@ pub const MAX_SIZE: usize = 100;
 
 fn private_function() {}
 
-pub fn public_function(x: i32) -> i32 {
+ pub fn public_function(x: i32) -> i32 {
     x * 2
-}
-"#;
-        let objects = DiscoverObjects::parse_source(source, Lang::Rust).unwrap();
+ }
+ "#;
+        let temp = tempdir().unwrap();
+        let file_path = temp.path().join("sample.rs");
+        fs::write(&file_path, source).unwrap();
+        let (_lang, objects) = DiscoverObjects::parse_file(file_path.to_str().unwrap()).unwrap();
 
         assert!(objects.iter().any(|o| o.name == "MyStruct"));
         assert!(objects.iter().any(|o| o.name == "MyEnum"));
@@ -207,7 +228,7 @@ pub fn public_function(x: i32) -> i32 {
     #[test]
     fn test_parse_python_source() {
         let source = r#"
-def hello():
+ def hello():
     pass
 
 class MyClass:
@@ -217,10 +238,13 @@ class MyClass:
     def method(self):
         pass
 
-async def async_func():
+ async def async_func():
     pass
-"#;
-        let objects = DiscoverObjects::parse_source(source, Lang::Python).unwrap();
+ "#;
+        let temp = tempdir().unwrap();
+        let file_path = temp.path().join("sample.py");
+        fs::write(&file_path, source).unwrap();
+        let (_lang, objects) = DiscoverObjects::parse_file(file_path.to_str().unwrap()).unwrap();
 
         assert!(objects.iter().any(|o| o.name == "hello"));
         assert!(objects.iter().any(|o| o.name == "MyClass"));
@@ -232,7 +256,7 @@ async def async_func():
     #[test]
     fn test_parse_javascript_source() {
         let source = r#"
-function hello() {
+ function hello() {
     console.log("Hello");
 }
 
@@ -242,9 +266,12 @@ class MyClass {
     method() {}
 }
 
-const arrowFn = () => {};
-"#;
-        let objects = DiscoverObjects::parse_source(source, Lang::JavaScript).unwrap();
+ const arrowFn = () => {};
+ "#;
+        let temp = tempdir().unwrap();
+        let file_path = temp.path().join("sample.js");
+        fs::write(&file_path, source).unwrap();
+        let (_lang, objects) = DiscoverObjects::parse_file(file_path.to_str().unwrap()).unwrap();
 
         assert!(objects.iter().any(|o| o.name == "hello"));
         assert!(objects.iter().any(|o| o.name == "MyClass"));
@@ -253,7 +280,7 @@ const arrowFn = () => {};
     #[test]
     fn test_parse_go_source() {
         let source = r#"
-package main
+ package main
 
 func hello() {
     fmt.Println("Hello")
@@ -264,11 +291,14 @@ type Person struct {
     Age  int
 }
 
-func (p *Person) Greet() string {
+ func (p *Person) Greet() string {
     return "Hello, " + p.Name
-}
-"#;
-        let objects = DiscoverObjects::parse_source(source, Lang::Go).unwrap();
+ }
+ "#;
+        let temp = tempdir().unwrap();
+        let file_path = temp.path().join("sample.go");
+        fs::write(&file_path, source).unwrap();
+        let (_lang, objects) = DiscoverObjects::parse_file(file_path.to_str().unwrap()).unwrap();
 
         assert!(objects.iter().any(|o| o.name == "hello"));
         assert!(objects.iter().any(|o| o.name == "Greet"));

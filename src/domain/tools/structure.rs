@@ -161,11 +161,7 @@ impl Tool for Structure {
         let input = match self.load_input() {
             Ok(input) => input,
             Err(e) => {
-                return ToolResult::error(
-                    self.name().to_string(),
-                    String::new(),
-                    e.to_string(),
-                )
+                return ToolResult::error(self.name().to_string(), String::new(), e.to_string())
             }
         };
 
@@ -214,12 +210,40 @@ impl Tool for Structure {
     }
 
     fn desc(&self) -> String {
-        format!(
-            "Use the `{}` tool to get directory structure.",
-            self.name()
-        )
+        format!("Use the `{}` tool to get directory structure.", self.name())
     }
 
+    fn get_input(&self) -> String {
+        self.input
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|input| input.raw.clone())
+            .unwrap_or_default()
+    }
+
+    fn get_affected_paths(&self, request: &dyn Request) -> Vec<PathBuf> {
+        match self.input.lock().unwrap().as_ref() {
+            Some(input) => {
+                let path = if input.path.is_empty() || input.path == "." {
+                    request.project_root().to_path_buf()
+                } else {
+                    let input_path = Path::new(&input.path);
+                    if input_path.is_absolute() {
+                        input_path.to_path_buf()
+                    } else {
+                        request.project_root().join(input_path)
+                    }
+                };
+                vec![path]
+            }
+            None => vec![],
+        }
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
 }
 
 impl Default for Structure {

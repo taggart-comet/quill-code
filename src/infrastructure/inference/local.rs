@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex, Once, OnceLock};
 use super::{InferenceEngine, LLMInferenceResult};
 use crate::domain::ModelType;
 use crate::infrastructure::InfaError;
-use crate::infrastructure::model_registry;
 
 pub struct LocalParams {
     pub ctx_size: u32,
@@ -54,18 +53,6 @@ pub struct LocalEngine {
 }
 
 impl LocalEngine {
-    /// Load or get a cached inference engine instance.
-    /// Automatically scans and selects a model from the registry.
-    pub fn load() -> Result<Arc<dyn InferenceEngine>, String> {
-        log::info!("Scanning for GGUF models...");
-        let models =
-            model_registry::scan_models().map_err(|e| format!("Failed to scan models: {}", e))?;
-        let selected = model_registry::select_model(models)
-            .map_err(|e| format!("Failed to select model: {}", e))?;
-
-        Self::load_with_path(&selected)
-    }
-
     /// Load or get a cached inference engine instance for a specific model path.
     pub fn load_with_path<P: AsRef<Path>>(
         model_path: P,
@@ -182,6 +169,7 @@ impl InferenceEngine for LocalEngine {
 
         Ok(LLMInferenceResult {
             summary: output.trim().to_string(),
+            raw_output: output,
             chosen_tool: None,
         })
     }

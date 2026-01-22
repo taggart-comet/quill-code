@@ -63,25 +63,6 @@ impl<'a> SessionsRepository<'a> {
         Ok(result)
     }
 
-    pub fn find_by_project(&self, project_id: i64) -> Result<Vec<SessionRow>, String> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT id, project_id, name, created_at FROM sessions WHERE project_id = ? ORDER BY created_at DESC",
-            )
-            .map_err(|e| e.to_string())?;
-
-        let rows = stmt
-            .query_map(params![project_id], SessionRow::from_row)
-            .map_err(|e| e.to_string())?;
-
-        let mut sessions = Vec::new();
-        for row in rows {
-            sessions.push(row.map_err(|e| e.to_string())?);
-        }
-
-        Ok(sessions)
-    }
 }
 
 fn chrono_now() -> String {

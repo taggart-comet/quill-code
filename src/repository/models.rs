@@ -6,10 +6,10 @@ use rusqlite::{params, Connection, Row};
 pub struct ModelRow {
     pub id: i64,
     pub model_type: ModelType,
-    pub api_key: Option<String>,
+    pub _api_key: Option<String>,
     pub gguf_file_path: Option<String>,
     pub model_name: Option<String>,
-    pub date_added: String,
+    pub _date_added: String,
 }
 
 impl ModelRow {
@@ -20,10 +20,10 @@ impl ModelRow {
         Ok(Self {
             id: row.get(0)?,
             model_type,
-            api_key: row.get(2)?,
+            _api_key: row.get(2)?,
             gguf_file_path: row.get(3)?,
             model_name: row.get(4)?,
-            date_added: row.get(5)?,
+            _date_added: row.get(5)?,
         })
     }
 }
@@ -49,24 +49,6 @@ impl<'a> ModelsRepository<'a> {
             .map_err(|e| e.to_string())?;
 
         Ok(result)
-    }
-
-    pub fn find_all(&self) -> Result<Vec<ModelRow>, String> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, type, api_key, gguf_file_path, model_name, date_added FROM models ORDER BY date_added DESC")
-            .map_err(|e| e.to_string())?;
-
-        let rows = stmt
-            .query_map([], ModelRow::from_row)
-            .map_err(|e| e.to_string())?;
-
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row.map_err(|e| e.to_string())?);
-        }
-
-        Ok(results)
     }
 
     pub fn find_by_type(&self, model_type: ModelType) -> Result<Vec<ModelRow>, String> {
@@ -108,10 +90,10 @@ impl<'a> ModelsRepository<'a> {
         Ok(ModelRow {
             id,
             model_type,
-            api_key: api_key.map(|s| s.to_string()),
+            _api_key: api_key.map(|s| s.to_string()),
             gguf_file_path: gguf_file_path.map(|s| s.to_string()),
             model_name: model_name.map(|s| s.to_string()),
-            date_added,
+            _date_added: date_added,
         })
     }
 
@@ -127,42 +109,6 @@ impl<'a> ModelsRepository<'a> {
         Ok(rows_affected > 0)
     }
 
-    pub fn delete(&self, id: i64) -> Result<bool, String> {
-        let rows_affected = self
-            .conn
-            .execute("DELETE FROM models WHERE id = ?", params![id])
-            .map_err(|e| e.to_string())?;
-
-        Ok(rows_affected > 0)
-    }
-
-    pub fn update_api_key(&self, id: i64, api_key: Option<&str>) -> Result<bool, String> {
-        let rows_affected = self
-            .conn
-            .execute(
-                "UPDATE models SET api_key = ? WHERE id = ?",
-                params![api_key, id],
-            )
-            .map_err(|e| e.to_string())?;
-
-        Ok(rows_affected > 0)
-    }
-
-    pub fn update_gguf_file_path(
-        &self,
-        id: i64,
-        gguf_file_path: Option<&str>,
-    ) -> Result<bool, String> {
-        let rows_affected = self
-            .conn
-            .execute(
-                "UPDATE models SET gguf_file_path = ? WHERE id = ?",
-                params![gguf_file_path, id],
-            )
-            .map_err(|e| e.to_string())?;
-
-        Ok(rows_affected > 0)
-    }
 }
 
 fn chrono_now() -> String {

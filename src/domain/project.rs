@@ -8,7 +8,7 @@ pub struct Project {
     id: i64,
     name: String,
     project_root: PathBuf,
-    created_at: u64,
+    _created_at: u64,
     session_count: u64,
 }
 
@@ -25,10 +25,6 @@ impl Project {
         &self.project_root
     }
 
-    pub fn created_at(&self) -> u64 {
-        self.created_at
-    }
-
     pub fn session_count(&self) -> u64 {
         self.session_count
     }
@@ -43,7 +39,7 @@ impl From<ProjectRow> for Project {
                 .project_root
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(".")),
-            created_at: row.created_at.parse().unwrap_or(0),
+            _created_at: row.created_at.parse().unwrap_or(0),
             session_count: row.session_count as u64,
         }
     }

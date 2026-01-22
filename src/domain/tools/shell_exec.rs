@@ -2,13 +2,9 @@ use crate::domain::session::Request;
 use crate::domain::tools::{Error, Tool, ToolResult};
 use serde::Deserialize;
 use serde_json::json;
-use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
-use std::thread;
-use std::time::Duration;
-
-const DELAY_SECONDS: u64 = 5;
 
 pub struct ShellExec {
     input: Mutex<Option<ShellExecInputParsed>>,
@@ -92,9 +88,6 @@ impl Tool for ShellExec {
             None => request.project_root().to_path_buf(),
         };
 
-        // Warn user and give time to cancel
-        Self::warn_and_wait(&input.command, &work_dir);
-
         // Execute the command
         let output = match Command::new("bash")
             .arg("-c")
@@ -162,12 +155,75 @@ impl Tool for ShellExec {
 
     fn desc(&self) -> String {
         format!(
-            r#"Use the `{}` tool to execute shell commands.
+            r#"Use `{}` tool to execute shell commands.
 Please DO NOT use it to read the full content of a file, this is not efficient, use `read_objects` tool for this."#,
             self.name()
         )
     }
 
+    fn get_input(&self) -> String {
+        self.input
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|input| input.raw.clone())
+            .unwrap_or_default()
+    }
+
+    fn get_command(&self, _request: &dyn Request) -> Option<String> {
+        match self.input.lock().unwrap().as_ref() {
+            Some(input) => Some(input.command.clone()),
+            None => None,
+        }
+    }
+
+    fn get_affected_paths(&self, request: &dyn Request) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+
+        if let Some(input) = self.input.lock().unwrap().as_ref() {
+            // Add working directory if specified
+            if let Some(ref working_dir) = input.working_dir {
+                paths.push(PathBuf::from(working_dir));
+            }
+
+            // Try to extract file paths from common commands
+            let command = &input.command;
+
+            // Extract paths from commands like `rm file.txt`, `touch file.txt`, etc.
+            if command.starts_with("rm ")
+                || command.starts_with("touch ")
+                || command.starts_with("mkdir ")
+            {
+                let parts: Vec<&str> = command.split_whitespace().collect();
+                for part in parts.iter().skip(1) {
+                    if !part.starts_with('-') {
+                        // Skip flags
+                        let path = PathBuf::from(part);
+                        if !path.is_absolute() {
+                            paths.push(request.project_root().join(path));
+                        } else {
+                            paths.push(path);
+                        }
+                    }
+                }
+            }
+
+            // Extract paths from redirect operations like `echo content > file.txt`
+            if let Some(redirect_pos) = command.find('>') {
+                let after_redirect = &command[redirect_pos + 1..].trim();
+                if let Some(file_path) = after_redirect.split_whitespace().next() {
+                    let path = PathBuf::from(file_path);
+                    if !path.is_absolute() {
+                        paths.push(request.project_root().join(path));
+                    } else {
+                        paths.push(path);
+                    }
+                }
+            }
+        }
+
+        paths
+    }
 }
 
 impl ShellExec {
@@ -184,44 +240,62 @@ impl Default for ShellExec {
     }
 }
 
-impl ShellExec {
-    /// Display warning and countdown before executing command
-    #[cfg(not(test))]
-    fn warn_and_wait(command: &str, work_dir: &std::path::Path) {
-        println!("\n\x1b[33m┌─ Action Approval: shell_exec ─────────────────────────────\x1b[0m");
-        println!("\x1b[33m│\x1b[0m Command: \x1b[1m{}\x1b[0m", command);
-        println!("\x1b[33m│\x1b[0m Workdir: {}", work_dir.display());
-        println!("\x1b[33m│\x1b[0m");
-        print!("\x1b[33m│\x1b[0m Executing in: ");
-        let _ = io::stdout().flush();
-
-        for i in (1..=DELAY_SECONDS).rev() {
-            print!("\x1b[1m{}\x1b[0m ", i);
-            let _ = io::stdout().flush();
-            thread::sleep(Duration::from_secs(1));
-        }
-
-        println!("\n\x1b[33m│\x1b[0m \x1b[32mExecuting...\x1b[0m");
-        println!("\x1b[33m└────────────────────────────────────────────────\x1b[0m\n");
-    }
-
-    #[cfg(test)]
-    fn warn_and_wait(_command: &str, _work_dir: &std::path::Path) {
-        // Skip delay in tests
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::session::VirtualRequest;
+    use crate::domain::session::{Request, SessionRequest};
     use std::fs;
+    use std::path::{Path, PathBuf};
     use tempfile::tempdir;
+
+    struct TestRequest {
+        root: PathBuf,
+        current_request: String,
+        history: Vec<SessionRequest>,
+        final_message: Option<String>,
+    }
+
+    impl TestRequest {
+        fn new(root: &Path) -> Self {
+            Self {
+                root: root.to_path_buf(),
+                current_request: "test".to_string(),
+                history: Vec::new(),
+                final_message: None,
+            }
+        }
+    }
+
+    impl Request for TestRequest {
+        fn history(&self) -> &[SessionRequest] {
+            &self.history
+        }
+
+        fn current_request(&self) -> &str {
+            &self.current_request
+        }
+
+        fn project_root(&self) -> &Path {
+            &self.root
+        }
+
+        fn user_settings(&self) -> Option<&crate::domain::UserSettings> {
+            None
+        }
+
+        fn project_id(&self) -> Option<i32> {
+            None
+        }
+
+        fn set_final_message(&mut self, message: String) {
+            self.final_message = Some(message);
+        }
+    }
 
     #[test]
     fn test_shell_exec_echo() {
         let temp = tempdir().unwrap();
-        let request = VirtualRequest::new("test", temp.path());
+        let request = TestRequest::new(temp.path());
 
         let tool = ShellExec::new();
         assert!(tool
@@ -239,7 +313,7 @@ mod tests {
     #[test]
     fn test_shell_exec_pwd() {
         let temp = tempdir().unwrap();
-        let request = VirtualRequest::new("test", temp.path());
+        let request = TestRequest::new(temp.path());
 
         let tool = ShellExec::new();
         assert!(tool
@@ -263,7 +337,7 @@ mod tests {
         let subdir = temp.path().join("subdir");
         fs::create_dir(&subdir).unwrap();
 
-        let request = VirtualRequest::new("test", temp.path());
+        let request = TestRequest::new(temp.path());
 
         let tool = ShellExec::new();
         assert!(tool
@@ -287,7 +361,7 @@ mod tests {
     #[test]
     fn test_shell_exec_working_dir_outside_project() {
         let temp = tempdir().unwrap();
-        let request = VirtualRequest::new("test", temp.path());
+        let request = TestRequest::new(temp.path());
 
         let tool = ShellExec::new();
         assert!(tool
@@ -306,7 +380,7 @@ mod tests {
     #[test]
     fn test_shell_exec_failed_command() {
         let temp = tempdir().unwrap();
-        let request = VirtualRequest::new("test", temp.path());
+        let request = TestRequest::new(temp.path());
 
         let tool = ShellExec::new();
         assert!(tool
@@ -325,7 +399,7 @@ mod tests {
     #[test]
     fn test_shell_exec_command_with_stderr() {
         let temp = tempdir().unwrap();
-        let request = VirtualRequest::new("test", temp.path());
+        let request = TestRequest::new(temp.path());
 
         let tool = ShellExec::new();
         assert!(tool
@@ -340,7 +414,7 @@ mod tests {
     #[test]
     fn test_shell_exec_empty_command() {
         let temp = tempdir().unwrap();
-        let request = VirtualRequest::new("test", temp.path());
+        let request = TestRequest::new(temp.path());
 
         let tool = ShellExec::new();
         let err = tool.parse_input(r#"{"command":""}"#.to_string());
@@ -352,7 +426,7 @@ mod tests {
     #[test]
     fn test_shell_exec_creates_file() {
         let temp = tempdir().unwrap();
-        let request = VirtualRequest::new("test", temp.path());
+        let request = TestRequest::new(temp.path());
         let file_path = temp.path().join("created.txt");
 
         let tool = ShellExec::new();
@@ -378,7 +452,7 @@ mod tests {
     #[test]
     fn test_shell_exec_piped_commands() {
         let temp = tempdir().unwrap();
-        let request = VirtualRequest::new("test", temp.path());
+        let request = TestRequest::new(temp.path());
 
         let tool = ShellExec::new();
         assert!(tool

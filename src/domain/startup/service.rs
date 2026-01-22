@@ -8,41 +8,17 @@ use rusqlite::Connection;
 use std::env;
 use std::sync::Arc;
 
-/// Configuration for the startup service
-#[derive(Debug, Clone)]
-pub struct StartupConfig {
-    pub debug: bool,
-}
-
 /// Domain service responsible for creating sessions and managing domain logic
 /// This service operates on already-initialized infrastructure components
 pub struct StartupService {
-    config: StartupConfig,
     engine: Arc<dyn InferenceEngine>,
     conn: Arc<Connection>,
 }
 
 impl StartupService {
     /// Create a new startup service with the given configuration
-    pub fn new(
-        config: StartupConfig,
-        engine: Arc<dyn InferenceEngine>,
-        conn: Arc<Connection>,
-    ) -> Self {
-        Self {
-            config,
-            engine,
-            conn,
-        }
-    }
-
-    /// Create a startup service with debug configuration
-    pub fn with_debug(
-        debug: bool,
-        engine: Arc<dyn InferenceEngine>,
-        conn: Arc<Connection>,
-    ) -> Self {
-        Self::new(StartupConfig { debug }, engine, conn)
+    pub fn new(engine: Arc<dyn InferenceEngine>, conn: Arc<Connection>) -> Self {
+        Self { engine, conn }
     }
 
     /// Create a new session with the given first prompt
@@ -198,45 +174,15 @@ impl StartupService {
         let request_rows = requests_repo
             .find_by_session(session_id)
             .map_err(Error::Repository)?;
-        let requests: Vec<SessionRequest> =
-            request_rows.into_iter().map(SessionRequest::from).collect();
+        let requests: Vec<SessionRequest> = request_rows
+            .into_iter()
+            .map(SessionRequest::from_row)
+            .collect();
 
         let session = Session::load_with_requests(session_row, project, requests);
         Ok(session)
     }
 
-    /// Add a new request to an existing session
-    pub fn add_request(&self, session: &mut Session, prompt: &str) -> Result<(), Error> {
-        let requests_repo = SessionRequestsRepository::new(self.conn.clone());
-        let request_row = requests_repo
-            .create(session.id(), prompt)
-            .map_err(Error::Repository)?;
-        let request = SessionRequest::from(request_row);
-        session.add_request(request);
-        session.set_current_request(prompt.to_string());
-        Ok(())
-    }
-
-    /// Update the result of the latest request in a session
-    pub fn update_latest_result(
-        &self,
-        session: &mut Session,
-        result_summary: &str,
-    ) -> Result<(), Error> {
-        let requests_repo = SessionRequestsRepository::new(self.conn.clone());
-        if let Some(latest_request) = requests_repo
-            .find_latest_by_session(session.id())
-            .map_err(Error::Repository)?
-        {
-            requests_repo
-                .update_result(latest_request.id, result_summary)
-                .map_err(Error::Repository)?;
-
-            // Reload the session to get the updated request
-            *session = self.load_session(session.id())?;
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -264,13 +210,4 @@ mod tests {
         assert_eq!(StartupService::fallback_session_name(""), "New Session");
     }
 
-    #[test]
-    fn test_startup_config() {
-        let config = StartupConfig { debug: false };
-        assert!(!config.debug);
-
-        // Note: This test would need mock engine and conn to work properly
-        // For now, we just test the config structure
-        assert!(config.debug == false);
-    }
 }

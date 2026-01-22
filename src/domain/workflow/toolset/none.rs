@@ -8,7 +8,7 @@ pub struct NoneToolset {
 
 impl NoneToolset {
     pub fn new() -> Self {
-        let mut tools: HashMap<String, Box<dyn Tool>> = HashMap::new();
+        let tools: HashMap<String, Box<dyn Tool>> = HashMap::new();
 
         Self { tools }
     }

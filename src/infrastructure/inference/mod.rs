@@ -8,6 +8,7 @@ pub mod openai;
 
 pub struct LLMInferenceResult {
     pub summary: String,
+    pub raw_output: String,
     pub chosen_tool: Option<Box<dyn Tool>>,
 }
 

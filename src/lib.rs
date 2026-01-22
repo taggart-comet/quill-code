@@ -7,5 +7,4 @@ pub mod config;
 pub use domain::*;
 pub use infrastructure::*;
 pub use repository::*;
-pub use utils::*;
 pub use config::*;

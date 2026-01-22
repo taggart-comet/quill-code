@@ -1,6 +1,6 @@
-use crate::domain::tools::ToolResult;
-use serde::{Deserialize, Serialize};
+use crate::domain::tools::{FileChange, ToolResult};
 use crate::domain::{prompting, ModelType};
+use serde::{Deserialize, Serialize};
 
 /// Types of steps that can occur in an execution chain
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -10,7 +10,7 @@ pub enum StepType {
     /// User interrupted the workflow (Ctrl+C)
     UserInterruption,
     /// Signifies that a step in the behavior tree was completed
-    BehaviorTreeStepPassed
+    BehaviorTreeStepPassed,
 }
 
 impl StepType {
@@ -36,6 +36,8 @@ pub struct ChainStep {
     pub tool_output: Option<String>,
     #[serde(default)]
     pub is_successful: Option<bool>,
+    #[serde(default)]
+    pub file_changes: Option<Vec<FileChange>>,
 }
 
 impl ChainStep {
@@ -49,6 +51,7 @@ impl ChainStep {
         let mut tool_name = None;
         let mut tool_output = None;
         let mut is_successful = None;
+        let mut file_changes = None;
         if let Some(tr) = tool_result {
             summary = tr.summary();
             context_payload = tr.output_string();
@@ -56,6 +59,7 @@ impl ChainStep {
             tool_name = Some(tr.tool_name().to_string());
             tool_output = Some(tr.output_raw().to_string());
             is_successful = Some(tr.is_successful());
+            file_changes = tr.file_changes().map(|fc| fc.to_vec());
         }
 
         Self {
@@ -66,6 +70,7 @@ impl ChainStep {
             tool_name,
             tool_output,
             is_successful,
+            file_changes,
         }
     }
 

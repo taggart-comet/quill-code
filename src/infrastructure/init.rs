@@ -2,10 +2,11 @@ use crate::domain::ModelType;
 use crate::infrastructure::db;
 use crate::infrastructure::inference::openai::OpenAIEngine;
 use crate::infrastructure::inference::{local::LocalEngine, InferenceEngine};
+use crate::infrastructure::app_bus::{LocalModelInfo, ModelSelection};
 use crate::infrastructure::model_registry;
-use crate::repository::{MetaRepository, ModelsRepository};
+use crate::repository::{MetaRepository, ModelsRepository, UserSettingsRepository};
 use rusqlite::Connection;
-use std::io::{self, Write};
+use std::io::{self};
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
@@ -44,14 +45,14 @@ pub enum InitError {
 /// Configuration for infrastructure initialization
 #[derive(Debug, Clone)]
 pub struct InfrastructureConfig {
-    pub debug: bool,
+    pub _debug: bool,
     pub app_name: String,
 }
 
 impl Default for InfrastructureConfig {
     fn default() -> Self {
         Self {
-            debug: false,
+            _debug: false,
             app_name: "drastis".to_string(),
         }
     }
@@ -60,7 +61,8 @@ impl Default for InfrastructureConfig {
 /// Result of infrastructure initialization
 pub struct InfrastructureComponents {
     pub connection: Arc<Connection>,
-    pub engine: Arc<dyn InferenceEngine>,
+    pub engine: Option<Arc<dyn InferenceEngine>>,
+    pub app_name: String,
 }
 
 /// Infrastructure initialization service
@@ -75,10 +77,9 @@ impl InfrastructureInitializer {
         Self { config }
     }
 
-    /// Create with debug flag
     pub fn with_debug(debug: bool) -> Self {
         Self::new(InfrastructureConfig {
-            debug,
+            _debug: debug,
             ..Default::default()
         })
     }
@@ -90,7 +91,7 @@ impl InfrastructureInitializer {
     pub fn initialize(&self) -> Result<InfrastructureComponents, InitError> {
         // 1. Initialize database
         log::info!("Initializing database...");
-        let connection = db::init_db(&self.config.app_name, self.config.debug)
+        let connection = db::init_db(&self.config.app_name)
             .map_err(|e| InitError::Database(e))?;
 
         // 2. Check if model is already selected
@@ -100,16 +101,21 @@ impl InfrastructureInitializer {
             .map_err(|e| InitError::Repository(e))?;
 
         let engine = if let Some(model_id) = last_used_model_id {
-            // Load existing model
-            self.load_existing_model(&connection, model_id)?
+            let engine = self.load_existing_model(&connection, model_id)?;
+            let settings_repo = UserSettingsRepository::new(&connection);
+            let _ = settings_repo.update_current_model_id(Some(model_id));
+            Some(engine)
         } else {
-            // Prompt user to select a model
-            self.select_and_setup_model(&connection)?
+            None
         };
 
         log::info!("Infrastructure initialized successfully.");
 
-        Ok(InfrastructureComponents { connection, engine })
+        Ok(InfrastructureComponents {
+            connection,
+            engine,
+            app_name: self.config.app_name.clone(),
+        })
     }
 
     /// Load an existing model from the database
@@ -136,7 +142,11 @@ impl InfrastructureInitializer {
                     .map_err(|e| InitError::ModelLoadError(e))
             }
             ModelType::OpenAI => {
-                let api_key = model.api_key.ok_or(InitError::MissingApiKey)?;
+                let settings_repo = UserSettingsRepository::new(conn);
+                let settings = settings_repo
+                    .get_current()
+                    .map_err(InitError::Repository)?;
+                let api_key = settings.openai_api_key.ok_or(InitError::MissingApiKey)?;
                 // Use saved model_name, fallback to gpt-4 for backward compatibility
                 let model_name = model.model_name.as_deref().unwrap_or("gpt-4");
                 use crate::infrastructure::inference::openai::OpenAIEngine;
@@ -145,344 +155,11 @@ impl InfrastructureInitializer {
         }
     }
 
-    /// Prompt user to select and setup a model
-    fn select_and_setup_model(
-        &self,
-        conn: &Connection,
-    ) -> Result<Arc<dyn InferenceEngine>, InitError> {
-        println!("\nNo model selected. Please choose a model type:");
-        println!("  [1] Local (GGUF file)");
-        println!("  [2] OpenAI");
-
-        let model_type = loop {
-            print!("Select model type (1-2): ");
-            io::stdout().flush()?;
-
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-
-            match input.trim() {
-                "1" => break ModelType::Local,
-                "2" => break ModelType::OpenAI,
-                _ => println!("Invalid selection. Please enter 1 or 2."),
-            }
-        };
-
-        let models_repo = ModelsRepository::new(conn);
-        let meta_repo = MetaRepository::new(conn);
-
-        let (model_id, engine) = match model_type {
-            ModelType::Local => self.setup_local_model(conn, &models_repo, &meta_repo)?,
-            ModelType::OpenAI => self.setup_openai_model(conn, &models_repo, &meta_repo)?,
-        };
-
-        // Set last_used_model_id - this must happen after successful engine loading
-        meta_repo
-            .set_last_used_model_id(model_id)
-            .map_err(|e| InitError::Repository(e))?;
-
-        Ok(engine)
-    }
-
-    /// Setup a local GGUF model
-    fn setup_local_model(
-        &self,
-        conn: &Connection,
-        models_repo: &ModelsRepository,
-        meta_repo: &MetaRepository,
-    ) -> Result<(i64, Arc<dyn InferenceEngine>), InitError> {
-        // Scan for GGUF files
-        let gguf_files = model_registry::scan_models()
-            .map_err(|e| InitError::UserInput(format!("Failed to scan models: {}", e)))?;
-
-        if gguf_files.is_empty() {
-            return Err(InitError::UserInput(
-                "No GGUF models found in ./models/ directory".to_string(),
-            ));
-        }
-
-        // Display available models
-        println!("\nAvailable GGUF models:");
-        for (i, file) in gguf_files.iter().enumerate() {
-            let filename = file.file_name().unwrap_or_default().to_string_lossy();
-            println!("  [{}] {}", i + 1, filename);
-        }
-
-        // Prompt user to select
-        let selected_file = loop {
-            print!("Select model (1-{}): ", gguf_files.len());
-            io::stdout().flush()?;
-
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-
-            match input.trim().parse::<usize>() {
-                Ok(n) if n >= 1 && n <= gguf_files.len() => {
-                    break &gguf_files[n - 1];
-                }
-                _ => {
-                    println!(
-                        "Invalid selection. Please enter a number between 1 and {}.",
-                        gguf_files.len()
-                    );
-                }
-            }
-        };
-
-        // Convert to absolute path for consistency
-        let gguf_path = selected_file
-            .canonicalize()
-            .unwrap_or_else(|_| selected_file.to_path_buf())
-            .to_string_lossy()
-            .to_string();
-
-        // Check if model with this path already exists
-        let existing_models = models_repo
-            .find_by_type(ModelType::Local)
-            .map_err(|e| InitError::Repository(e))?;
-
-        let (model, engine) = if let Some(existing) = existing_models.iter().find(|m| {
-            if let Some(existing_path) = &m.gguf_file_path {
-                // Compare paths (handle both absolute and relative)
-                let existing_abs = PathBuf::from(existing_path)
-                    .canonicalize()
-                    .unwrap_or_else(|_| PathBuf::from(existing_path));
-                let selected_abs = PathBuf::from(&gguf_path)
-                    .canonicalize()
-                    .unwrap_or_else(|_| PathBuf::from(&gguf_path));
-                existing_abs == selected_abs
-            } else {
-                false
-            }
-        }) {
-            println!("Using existing model entry (id: {})", existing.id);
-            // Verify the model file still exists
-            let model_path = existing
-                .gguf_file_path
-                .as_ref()
-                .map(PathBuf::from)
-                .ok_or(InitError::MissingGgufPath)?;
-            if !model_path.exists() {
-                return Err(InitError::ModelFileNotFound(format!(
-                    "{}. Please delete the model entry (id: {}) and try again.",
-                    model_path.display(),
-                    existing.id
-                )));
-            }
-            // Load the engine for existing model
-            let engine = LocalEngine::load_with_path(&model_path)
-                .map_err(|e| InitError::ModelLoadError(e))?;
-            (existing.clone(), engine)
-        } else {
-            // Try to load the engine FIRST before creating database entry
-            // This ensures we don't create a partial entry if loading fails
-            println!("Loading model (this may take a moment)...");
-            let engine = LocalEngine::load_with_path(selected_file).map_err(|e| {
-                InitError::ModelLoadError(format!(
-                    "{}\n\
-                    This could be due to:\n\
-                    - Corrupted model file\n\
-                    - Missing Metal framework support (macOS)\n\
-                    - Insufficient memory\n\
-                    Model entry was NOT created. Please check the model file and try again.",
-                    e
-                ))
-            })?;
-
-            // Only create database entry if engine loads successfully
-            println!("Model loaded successfully. Creating database entry...");
-            let model = models_repo
-                .create(ModelType::Local, None, Some(&gguf_path), None)
-                .map_err(|e| InitError::Repository(e))?;
-            (model, engine)
-        };
-
-        Ok((model.id, engine))
-    }
-
-    /// Setup an OpenAI model
-    fn setup_openai_model(
-        &self,
-        _conn: &Connection,
-        models_repo: &ModelsRepository,
-        _meta_repo: &MetaRepository,
-    ) -> Result<(i64, Arc<dyn InferenceEngine>), InitError> {
-        select_openai_model(models_repo, false)
-    }
 }
 
-/// Shared OpenAI model selection logic
-/// Used by both initial setup and runtime model change
-fn select_openai_model(
-    models_repo: &ModelsRepository,
-    allow_cancel: bool,
-) -> Result<(i64, Arc<dyn InferenceEngine>), InitError> {
-    use crate::infrastructure::inference::openai::OpenAIEngine;
-
-    // Check if there's an existing OpenAI model with API key
-    let existing_models = models_repo
-        .find_by_type(ModelType::OpenAI)
-        .map_err(|e| InitError::Repository(e))?;
-
-    // Get saved models that have a model_name
-    let saved_models: Vec<_> = existing_models
-        .iter()
-        .filter(|m| m.model_name.is_some() && m.api_key.is_some())
-        .collect();
-
-    let api_key = if let Some(existing) = existing_models.iter().find(|m| m.api_key.is_some()) {
-        println!("Using existing API key.");
-        existing.api_key.clone().unwrap()
-    } else {
-        // Prompt for API key
-        print!("Enter OpenAI API key: ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-
-        input.trim().to_string()
-    };
-
-    if api_key.is_empty() {
-        return Err(InitError::UserInput("API key cannot be empty".to_string()));
-    }
-
-    // If we have saved models, show them first with option to fetch new
-    let selected_model_name: String = if !saved_models.is_empty() {
-        println!("\nSaved OpenAI models:");
-        for (i, model) in saved_models.iter().enumerate() {
-            println!("  [{}] {}", i + 1, model.model_name.as_ref().unwrap());
-        }
-        println!("  [{}] Fetch new model from API...", saved_models.len() + 1);
-
-        let selection = loop {
-            print!("Select option (1-{}): ", saved_models.len() + 1);
-            io::stdout().flush()?;
-
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-
-            if allow_cancel && input.trim().is_empty() {
-                println!("Cancelled.");
-                return Err(InitError::UserInput("Cancelled".to_string()));
-            }
-
-            match input.trim().parse::<usize>() {
-                Ok(n) if n >= 1 && n <= saved_models.len() => {
-                    // User selected an existing model
-                    break Some(n - 1);
-                }
-                Ok(n) if n == saved_models.len() + 1 => {
-                    // User wants to fetch new models from API
-                    break None;
-                }
-                _ => {
-                    println!(
-                        "Invalid selection. Please enter a number between 1 and {}.",
-                        saved_models.len() + 1
-                    );
-                }
-            }
-        };
-
-        if let Some(idx) = selection {
-            // Use existing saved model
-            let model = saved_models[idx];
-            let model_name = model.model_name.as_ref().unwrap();
-            println!("Selected model: {}", model_name);
-
-            let engine = OpenAIEngine::new(&api_key, model_name)
-                .map_err(|e| InitError::ModelLoadError(e))?;
-
-            return Ok((model.id, engine));
-        }
-
-        // Fall through to fetch from API
-        fetch_and_select_model_from_api(&api_key, allow_cancel)?
-    } else {
-        // No saved models, fetch from API directly
-        fetch_and_select_model_from_api(&api_key, allow_cancel)?
-    };
-
-    println!("Selected model: {}", selected_model_name);
-
-    // Check if model with this model name already exists
-    let model = if let Some(existing) = existing_models.iter().find(|m| {
-        m.model_name
-            .as_ref()
-            .map(|n| n == &selected_model_name)
-            .unwrap_or(false)
-    }) {
-        println!("Using existing model entry (id: {})", existing.id);
-        existing.clone()
-    } else {
-        // Create new model entry with model_name
-        println!("Creating new model entry...");
-        models_repo
-            .create(
-                ModelType::OpenAI,
-                Some(&api_key),
-                None,
-                Some(&selected_model_name),
-            )
-            .map_err(|e| InitError::Repository(e))?
-    };
-
-    // Load the engine with the selected model
-    let engine = OpenAIEngine::new(&api_key, &selected_model_name)
-        .map_err(|e| InitError::ModelLoadError(e))?;
-
-    Ok((model.id, engine))
-}
-
-/// Fetch models from OpenAI API and let user select one
-fn fetch_and_select_model_from_api(api_key: &str, allow_cancel: bool) -> Result<String, InitError> {
-    use crate::infrastructure::inference::openai::OpenAIEngine;
-
-    println!("Fetching available models from OpenAI...");
-    let openai =
-        OpenAIEngine::new_general(api_key, "gpt-4").map_err(|e| InitError::ModelLoadError(e))?;
-    let available_models = openai
-        .fetch_available_models()
-        .map_err(|e| InitError::UserInput(format!("Failed to fetch models: {}", e)))?;
-
-    if available_models.is_empty() {
-        return Err(InitError::UserInput(
-            "No compatible models found in your OpenAI account".to_string(),
-        ));
-    }
-
-    // Display available models
-    println!("\nAvailable OpenAI models:");
-    for (i, model_name) in available_models.iter().enumerate() {
-        println!("  [{}] {}", i + 1, model_name);
-    }
-
-    // Prompt user to select a model
-    loop {
-        print!("Select model (1-{}): ", available_models.len());
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-
-        if allow_cancel && input.trim().is_empty() {
-            println!("Cancelled.");
-            return Err(InitError::UserInput("Cancelled".to_string()));
-        }
-
-        match input.trim().parse::<usize>() {
-            Ok(n) if n >= 1 && n <= available_models.len() => {
-                return Ok(available_models[n - 1].clone());
-            }
-            _ => {
-                println!(
-                    "Invalid selection. Please enter a number between 1 and {}.",
-                    available_models.len()
-                );
-            }
-        }
+impl Default for InfrastructureInitializer {
+    fn default() -> Self {
+        Self::new(InfrastructureConfig::default())
     }
 }
 
@@ -493,11 +170,9 @@ mod tests {
     #[test]
     fn test_infrastructure_config() {
         let config = InfrastructureConfig::default();
-        assert!(!config.debug);
         assert_eq!(config.app_name, "drastis");
-
-        let initializer = InfrastructureInitializer::with_debug(true);
-        assert!(initializer.config.debug);
+        let initializer = InfrastructureInitializer::default();
+        assert_eq!(initializer.config.app_name, "drastis");
     }
 }
 
@@ -509,12 +184,12 @@ impl From<InitError> for String {
 
 /// Get the current model name from the database
 pub fn get_current_model_name(conn: &Connection) -> Result<String, String> {
-    let meta_repo = MetaRepository::new(conn);
     let models_repo = ModelsRepository::new(conn);
+    let settings_repo = UserSettingsRepository::new(conn);
 
-    let model_id = meta_repo
-        .get_last_used_model_id()
-        .map_err(|e| e.to_string())?
+    let settings = settings_repo.get_current().map_err(|e| e.to_string())?;
+    let model_id = settings
+        .current_model_id
         .ok_or_else(|| "No model selected".to_string())?;
 
     let model = models_repo
@@ -538,161 +213,148 @@ pub fn get_current_model_name(conn: &Connection) -> Result<String, String> {
     }
 }
 
-/// Change the current model at runtime
-/// Returns the new inference engine if successful
-pub fn change_model(conn: &Connection) -> Result<Arc<dyn InferenceEngine>, InitError> {
-    println!("\nChange model. Please choose a model type:");
-    println!("  [1] Local (GGUF file)");
-    println!("  [2] OpenAI");
-
-    let model_type = loop {
-        print!("Select model type (1-2): ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-
-        match input.trim() {
-            "1" => break ModelType::Local,
-            "2" => break ModelType::OpenAI,
-            "" => {
-                println!("Cancelled.");
-                return Err(InitError::UserInput("Cancelled".to_string()));
-            }
-            _ => println!("Invalid selection. Please enter 1 or 2."),
-        }
-    };
-
-    let models_repo = ModelsRepository::new(conn);
-    let meta_repo = MetaRepository::new(conn);
-
-    let (model_id, engine) = match model_type {
-        ModelType::Local => setup_local_model_runtime(conn, &models_repo)?,
-        ModelType::OpenAI => setup_openai_model_runtime(conn, &models_repo)?,
-    };
-
-    // Update last_used_model_id
-    meta_repo
-        .set_last_used_model_id(model_id)
-        .map_err(|e| InitError::Repository(e))?;
-
-    println!("Model changed successfully.\n");
-
-    Ok(engine)
-}
-
-/// Setup a local GGUF model (runtime version)
-fn setup_local_model_runtime(
-    conn: &Connection,
-    models_repo: &ModelsRepository,
-) -> Result<(i64, Arc<dyn InferenceEngine>), InitError> {
-    // Scan for GGUF files
+pub fn list_local_models() -> Result<Vec<LocalModelInfo>, InitError> {
     let gguf_files = model_registry::scan_models()
         .map_err(|e| InitError::UserInput(format!("Failed to scan models: {}", e)))?;
 
-    if gguf_files.is_empty() {
-        return Err(InitError::UserInput(
-            "No GGUF models found in ./models/ directory".to_string(),
-        ));
-    }
-
-    // Display available models
-    println!("\nAvailable GGUF models:");
-    for (i, file) in gguf_files.iter().enumerate() {
-        let filename = file.file_name().unwrap_or_default().to_string_lossy();
-        println!("  [{}] {}", i + 1, filename);
-    }
-
-    // Prompt user to select
-    let selected_file = loop {
-        print!("Select model (1-{}): ", gguf_files.len());
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-
-        if input.trim().is_empty() {
-            println!("Cancelled.");
-            return Err(InitError::UserInput("Cancelled".to_string()));
-        }
-
-        match input.trim().parse::<usize>() {
-            Ok(n) if n >= 1 && n <= gguf_files.len() => {
-                break &gguf_files[n - 1];
-            }
-            _ => {
-                println!(
-                    "Invalid selection. Please enter a number between 1 and {}.",
-                    gguf_files.len()
-                );
-            }
-        }
-    };
-
-    // Convert to absolute path for consistency
-    let gguf_path = selected_file
-        .canonicalize()
-        .unwrap_or_else(|_| selected_file.to_path_buf())
-        .to_string_lossy()
-        .to_string();
-
-    // Check if model with this path already exists
-    let existing_models = models_repo
-        .find_by_type(ModelType::Local)
-        .map_err(|e| InitError::Repository(e))?;
-
-    let (model, engine) = if let Some(existing) = existing_models.iter().find(|m| {
-        if let Some(existing_path) = &m.gguf_file_path {
-            let existing_abs = PathBuf::from(existing_path)
+    let models = gguf_files
+        .iter()
+        .map(|file| {
+            let filename = file.file_name().unwrap_or_default().to_string_lossy();
+            let path = file
                 .canonicalize()
-                .unwrap_or_else(|_| PathBuf::from(existing_path));
-            let selected_abs = PathBuf::from(&gguf_path)
-                .canonicalize()
-                .unwrap_or_else(|_| PathBuf::from(&gguf_path));
-            existing_abs == selected_abs
-        } else {
-            false
-        }
-    }) {
-        println!("Using existing model entry (id: {})", existing.id);
-        let model_path = existing
-            .gguf_file_path
-            .as_ref()
-            .map(PathBuf::from)
-            .ok_or(InitError::MissingGgufPath)?;
-        if !model_path.exists() {
-            return Err(InitError::ModelFileNotFound(format!(
-                "{}. Please delete the model entry (id: {}) and try again.",
-                model_path.display(),
-                existing.id
-            )));
-        }
-        let engine =
-            LocalEngine::load_with_path(&model_path).map_err(|e| InitError::ModelLoadError(e))?;
-        (existing.clone(), engine)
-    } else {
-        println!("Loading model (this may take a moment)...");
-        let engine = LocalEngine::load_with_path(selected_file).map_err(|e| {
-            InitError::ModelLoadError(format!(
-                "{}\nModel entry was NOT created. Please check the model file and try again.",
-                e
-            ))
-        })?;
+                .unwrap_or_else(|_| file.to_path_buf())
+                .to_string_lossy()
+                .to_string();
+            LocalModelInfo {
+                name: filename.to_string(),
+                path,
+            }
+        })
+        .collect();
 
-        println!("Model loaded successfully. Creating database entry...");
-        let model = models_repo
-            .create(ModelType::Local, None, Some(&gguf_path), None)
-            .map_err(|e| InitError::Repository(e))?;
-        (model, engine)
-    };
-
-    Ok((model.id, engine))
+    Ok(models)
 }
 
-/// Setup an OpenAI model (runtime version)
-fn setup_openai_model_runtime(
-    _conn: &Connection,
-    models_repo: &ModelsRepository,
-) -> Result<(i64, Arc<dyn InferenceEngine>), InitError> {
-    select_openai_model(models_repo, true)
+pub fn update_openai_api_key(conn: &Connection, api_key: &str) -> Result<(), InitError> {
+    let settings_repo = UserSettingsRepository::new(conn);
+    settings_repo
+        .update_openai_api_key(Some(api_key))
+        .map_err(InitError::Repository)
+}
+
+pub fn apply_model_selection(
+    conn: &Connection,
+    selection: ModelSelection,
+) -> Result<Arc<dyn InferenceEngine>, InitError> {
+    let models_repo = ModelsRepository::new(conn);
+    let meta_repo = MetaRepository::new(conn);
+    let settings_repo = UserSettingsRepository::new(conn);
+
+    match selection {
+        ModelSelection::LocalPath(path) => {
+            let path_buf = PathBuf::from(&path);
+            if !path_buf.exists() {
+                return Err(InitError::ModelFileNotFound(path));
+            }
+            let canonical_path = path_buf
+                .canonicalize()
+                .unwrap_or_else(|_| path_buf.clone());
+            let gguf_path = canonical_path.to_string_lossy().to_string();
+
+            let existing_models = models_repo
+                .find_by_type(ModelType::Local)
+                .map_err(InitError::Repository)?;
+
+            let mut model_id = None;
+            for model in existing_models {
+                if let Some(existing_path) = &model.gguf_file_path {
+                    let existing_abs = PathBuf::from(existing_path)
+                        .canonicalize()
+                        .unwrap_or_else(|_| PathBuf::from(existing_path));
+                    if existing_abs == canonical_path {
+                        model_id = Some(model.id);
+                        break;
+                    }
+                }
+            }
+
+            let model_id = match model_id {
+                Some(id) => id,
+                None => {
+                    let model = models_repo
+                        .create(ModelType::Local, None, Some(&gguf_path), None)
+                        .map_err(InitError::Repository)?;
+                    model.id
+                }
+            };
+
+            let engine = LocalEngine::load_with_path(&canonical_path)
+                .map_err(InitError::ModelLoadError)?;
+
+            meta_repo
+                .set_last_used_model_id(model_id)
+                .map_err(InitError::Repository)?;
+
+            settings_repo
+                .update_current_model_id(Some(model_id))
+                .map_err(InitError::Repository)?;
+
+            Ok(engine)
+        }
+        ModelSelection::OpenAiModel(model_name) => {
+            let existing_models = models_repo
+                .find_by_type(ModelType::OpenAI)
+                .map_err(InitError::Repository)?;
+
+            let settings = settings_repo
+                .get_current()
+                .map_err(InitError::Repository)?;
+            let resolved_api_key = settings.openai_api_key.ok_or(InitError::MissingApiKey)?;
+
+            let mut model_id = None;
+            for model in &existing_models {
+                if model.model_name.as_deref() == Some(&model_name) {
+                    model_id = Some(model.id);
+                    break;
+                }
+            }
+
+            if model_id.is_none() {
+                if let Some(existing) = existing_models.iter().find(|model| model.model_name.is_none())
+                {
+                    models_repo
+                        .update_model_name(existing.id, Some(&model_name))
+                        .map_err(InitError::Repository)?;
+                    model_id = Some(existing.id);
+                }
+            }
+
+            let model_id = match model_id {
+                Some(id) => id,
+                None => models_repo
+                    .create(
+                        ModelType::OpenAI,
+                        None,
+                        None,
+                        Some(&model_name),
+                    )
+                    .map_err(InitError::Repository)?
+                    .id,
+            };
+
+            let engine = OpenAIEngine::new(&resolved_api_key, &model_name)
+                .map_err(InitError::ModelLoadError)?;
+
+            meta_repo
+                .set_last_used_model_id(model_id)
+                .map_err(InitError::Repository)?;
+
+            settings_repo
+                .update_current_model_id(Some(model_id))
+                .map_err(InitError::Repository)?;
+
+            Ok(engine)
+        }
+    }
 }

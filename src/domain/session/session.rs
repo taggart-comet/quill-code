@@ -1,5 +1,5 @@
 use super::{request::Request, session_request::SessionRequest};
-use crate::domain::Project;
+use crate::domain::{Project, UserSettings};
 use crate::repository::SessionRow;
 use std::path::Path;
 
@@ -11,9 +11,10 @@ pub struct Session {
     project_id: i64,
     project: Project,
     name: String,
-    created_at: u64,
+    _created_at: u64,
     requests: Vec<SessionRequest>,
     current_request: String,
+    current_user_settings: Option<UserSettings>,
     final_message: Option<String>,
 }
 
@@ -26,32 +27,16 @@ impl Session {
         self.project_id
     }
 
-    pub fn project(&self) -> &Project {
-        &self.project
-    }
-
     pub fn name(&self) -> &str {
         &self.name
-    }
-
-    pub fn created_at(&self) -> u64 {
-        self.created_at
-    }
-
-    pub fn requests(&self) -> &[SessionRequest] {
-        &self.requests
-    }
-
-    pub fn add_request(&mut self, request: SessionRequest) {
-        self.requests.push(request);
     }
 
     pub fn set_current_request(&mut self, prompt: String) {
         self.current_request = prompt;
     }
 
-    pub fn current_request(&self) -> &str {
-        &self.current_request
+    pub fn set_current_user_settings(&mut self, settings: Option<UserSettings>) {
+        self.current_user_settings = settings;
     }
 
     pub fn set_requests(&mut self, requests: Vec<SessionRequest>) {
@@ -75,9 +60,10 @@ impl Session {
             project_id: row.project_id,
             project,
             name: row.name,
-            created_at: row.created_at.parse().unwrap_or(0),
+            _created_at: row.created_at.parse().unwrap_or(0),
             requests: Vec::new(),
             current_request: String::new(),
+            current_user_settings: None,
             final_message: None,
         }
     }
@@ -94,6 +80,14 @@ impl Request for Session {
 
     fn project_root(&self) -> &Path {
         self.project.project_root()
+    }
+
+    fn user_settings(&self) -> Option<&UserSettings> {
+        self.current_user_settings.as_ref()
+    }
+
+    fn project_id(&self) -> Option<i32> {
+        Some(self.project_id as i32)
     }
 
     fn set_final_message(&mut self, message: String) {

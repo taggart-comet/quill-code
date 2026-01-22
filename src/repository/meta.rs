@@ -33,13 +33,6 @@ impl<'a> MetaRepository<'a> {
         Ok(())
     }
 
-    pub fn get_schema_version(&self) -> Result<i32, String> {
-        self.get("schema_version")?
-            .ok_or_else(|| "schema_version not found".to_string())?
-            .parse()
-            .map_err(|e: std::num::ParseIntError| e.to_string())
-    }
-
     pub fn get_last_used_model_id(&self) -> Result<Option<i64>, String> {
         match self.get("last_used_model_id")? {
             Some(value) => {
@@ -56,12 +49,6 @@ impl<'a> MetaRepository<'a> {
         self.set("last_used_model_id", &model_id.to_string())
     }
 
-    pub fn clear_last_used_model_id(&self) -> Result<(), String> {
-        self.conn
-            .execute("DELETE FROM meta WHERE key = 'last_used_model_id'", [])
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    }
 }
 
 trait OptionalExt<T> {

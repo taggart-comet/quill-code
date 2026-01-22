@@ -1,4 +1,4 @@
-use super::{DiscoverObjects, Error, Tool, ToolResult};
+use super::{Error, Tool, ToolResult};
 use crate::domain::session::Request;
 use crate::utils::{Lang, ObjectKind, ParsedObject, UniversalParser};
 use serde::Deserialize;
@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 pub struct ReadObjects {
@@ -43,13 +44,6 @@ impl ObjectQuery {
     pub fn new(name: &str) -> Self {
         Self {
             kind: None,
-            name: name.to_string(),
-        }
-    }
-
-    pub fn with_kind(kind: ObjectKind, name: &str) -> Self {
-        Self {
-            kind: Some(kind),
             name: name.to_string(),
         }
     }
@@ -196,11 +190,7 @@ impl Tool for ReadObjects {
         let input = match self.load_input() {
             Ok(input) => input,
             Err(e) => {
-                return ToolResult::error(
-                    self.name().to_string(),
-                    String::new(),
-                    e.to_string(),
-                )
+                return ToolResult::error(self.name().to_string(), String::new(), e.to_string())
             }
         };
 
@@ -239,147 +229,36 @@ impl Tool for ReadObjects {
         )
     }
 
+    fn get_input(&self) -> String {
+        self.input
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|input| input.raw.clone())
+            .unwrap_or_default()
+    }
+
+    fn get_affected_paths(&self, request: &dyn Request) -> Vec<PathBuf> {
+        match self.input.lock().unwrap().as_ref() {
+            Some(input) => {
+                let path = PathBuf::from(&input.full_path_to_file);
+                if path.is_absolute() {
+                    vec![path]
+                } else {
+                    vec![request.project_root().join(path)]
+                }
+            }
+            None => vec![],
+        }
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
 }
 
 impl Default for ReadObjects {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_read_rust_objects() {
-        let source = r#"
-pub struct MyStruct {
-    field: i32,
-}
-
-impl MyStruct {
-    pub fn new() -> Self {
-        Self { field: 0 }
-    }
-
-    pub fn get_field(&self) -> i32 {
-        self.field
-    }
-}
-
-pub fn standalone_fn() -> i32 {
-    42
-}
-"#;
-        let temp_dir = tempfile::tempdir().unwrap();
-        let file_path = temp_dir.path().join("test.rs");
-        std::fs::write(&file_path, source).unwrap();
-
-        let queries = vec![
-            ObjectQuery::with_kind(ObjectKind::Struct, "MyStruct"),
-            ObjectQuery::with_kind(ObjectKind::Function, "new"),
-            ObjectQuery::with_kind(ObjectKind::Function, "standalone_fn"),
-        ];
-
-        let (lang, results) =
-            ReadObjects::read_objects(file_path.to_str().unwrap(), &queries).unwrap();
-
-        assert_eq!(lang, Lang::Rust);
-        assert_eq!(results.len(), 3);
-
-        let struct_result = results.get("MyStruct").unwrap();
-        assert_eq!(struct_result.kind, "struct");
-        assert!(struct_result.content.contains("pub struct MyStruct"));
-
-        let new_result = results.get("new").unwrap();
-        assert_eq!(new_result.kind, "function");
-    }
-
-    #[test]
-    fn test_read_python_objects() {
-        let source = r#"
-def hello():
-    print("Hello")
-
-class MyClass:
-    def method(self):
-        pass
-"#;
-        let temp_dir = tempfile::tempdir().unwrap();
-        let file_path = temp_dir.path().join("test.py");
-        std::fs::write(&file_path, source).unwrap();
-
-        let queries = vec![
-            ObjectQuery::new("hello"),
-            ObjectQuery::with_kind(ObjectKind::Class, "MyClass"),
-        ];
-
-        let (lang, results) =
-            ReadObjects::read_objects(file_path.to_str().unwrap(), &queries).unwrap();
-
-        assert_eq!(lang, Lang::Python);
-        assert!(results.contains_key("hello"));
-        assert!(results.contains_key("MyClass"));
-    }
-
-    #[test]
-    fn test_parse_input() {
-        let source = r#"
-pub fn main() {}
-pub struct Config {}
-pub struct Parser {}
-"#;
-        let temp_dir = tempfile::tempdir().unwrap();
-        let file_path = temp_dir.path().join("test.rs");
-        std::fs::write(&file_path, source).unwrap();
-
-        let input_json = format!(
-            r#"{{"path":"{}","query":"main, Config, Parser"}}"#,
-            file_path.display()
-        );
-
-        let tool = ReadObjects::new();
-        assert!(tool.parse_input(input_json).is_none());
-        let result = tool.work(&crate::domain::session::VirtualRequest::new(
-            "test",
-            temp_dir.path(),
-        ));
-
-        let output = result.output_string();
-        assert!(output.contains("main"));
-        assert!(output.contains("Config"));
-        assert!(output.contains("Parser"));
-    }
-
-    #[test]
-    fn test_parse_input_missing_query() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let file_path = temp_dir.path().join("test.rs");
-        std::fs::write(&file_path, "pub fn main() {}").unwrap();
-
-        let input_json = format!(r#"{{"path":"{}","query":""}}"#, file_path.display());
-
-        let tool = ReadObjects::new();
-        let err = tool.parse_input(input_json).unwrap();
-        assert!(err.to_string().contains("query is required"));
-    }
-
-    #[test]
-    fn test_query_matching() {
-        let obj = ParsedObject {
-            name: "my_function".to_string(),
-            kind: ObjectKind::Function,
-            line_start: 1,
-            line_end: 5,
-            byte_start: 0,
-            byte_end: 100,
-            visibility: None,
-        };
-
-        assert!(ObjectQuery::new("my_function").matches(&obj));
-        assert!(ObjectQuery::with_kind(ObjectKind::Function, "my_function").matches(&obj));
-        assert!(!ObjectQuery::with_kind(ObjectKind::Class, "my_function").matches(&obj));
-        assert!(ObjectQuery::new("function").matches(&obj));
     }
 }

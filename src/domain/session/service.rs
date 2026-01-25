@@ -32,9 +32,12 @@ impl SessionService {
             prompter,
         ));
 
-        let workflow = Workflow::new(engine, permission_checker).map_err(
-            |err| format!("Failed to create workflow: {}", err),
-        )?;
+        let workflow = Workflow::new(
+            engine,
+            permission_checker,
+            Some(event_bus.agent_to_ui_tx.clone()),
+        )
+        .map_err(|err| format!("Failed to create workflow: {}", err))?;
 
         Ok(Self {
             workflow,

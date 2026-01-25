@@ -1,5 +1,5 @@
 use crate::domain::session::Request;
-use crate::domain::tools::{Error, FileChange, Tool, ToolResult};
+use crate::domain::tools::{short_filename, Error, FileChange, Tool, ToolResult};
 use serde::Deserialize;
 use serde_json::json;
 use similar::TextDiff;
@@ -258,6 +258,10 @@ impl Tool for PatchFiles {
         )
     }
 
+    fn get_output_budget(&self) -> Option<usize> {
+        None
+    }
+
     fn get_input(&self) -> String {
         self.input
             .lock()
@@ -265,6 +269,35 @@ impl Tool for PatchFiles {
             .as_ref()
             .map(|input| input.raw.clone())
             .unwrap_or_default()
+    }
+
+    fn get_progress_message(&self, _request: &dyn Request) -> String {
+        let input = match self.load_input() {
+            Ok(input) => input,
+            Err(_) => return "Patching files".to_string(),
+        };
+        let actions = match text_to_patch(&input.patch) {
+            Ok(actions) => actions,
+            Err(_) => return "Patching files".to_string(),
+        };
+        let mut names = Vec::new();
+        for action in &actions {
+            let name = short_filename(&action.path);
+            if !names.contains(&name) {
+                names.push(name);
+            }
+            if let Some(new_path) = &action.new_path {
+                let new_name = short_filename(new_path);
+                if !names.contains(&new_name) {
+                    names.push(new_name);
+                }
+            }
+        }
+        if names.is_empty() {
+            "Patching files".to_string()
+        } else {
+            format!("Patching {}", names.join(", "))
+        }
     }
 
     fn get_command(&self, _request: &dyn Request) -> Option<String> {

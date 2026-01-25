@@ -3,15 +3,17 @@ use super::{
     CancellationToken, Error,
 };
 use crate::domain::bt::GeneralTree;
-use crate::domain::{prompting, user_settings};
+use crate::domain::prompting;
 use crate::domain::session::Request;
 use crate::domain::workflow::AllToolset;
-use crate::domain::ModelType;
+use crate::infrastructure::app_bus::{AgentToUiEvent, StepPhase};
 use crate::infrastructure::inference::InferenceEngine;
+use crossbeam_channel::Sender;
 use tokio::runtime::{Builder, Handle};
 
-use std::sync::Arc;
 use openai_agents_tracing::{SpanKind, TracingFacade};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Main workflow orchestrator that runs LLM-driven coding tasks
 /// Implements an eternal agent loop that:
@@ -26,6 +28,7 @@ pub struct Workflow {
     chain: Chain,
     tool_runner: ToolRunner,
     tracer: Option<TracingFacade>,
+    progress_tx: Option<Sender<AgentToUiEvent>>,
 }
 
 impl Workflow {
@@ -33,13 +36,15 @@ impl Workflow {
     pub fn new(
         engine: Arc<dyn InferenceEngine>,
         permission_checker: Arc<crate::domain::permissions::PermissionChecker>,
+        progress_tx: Option<Sender<AgentToUiEvent>>,
     ) -> Result<Self, String> {
         Ok(Self {
             toolset: Box::new(AllToolset::new()),
             engine,
             chain: Chain::new(),
-            tool_runner: ToolRunner::new(permission_checker),
+            tool_runner: ToolRunner::new(permission_checker, progress_tx.clone()),
             tracer: None,
+            progress_tx,
         })
     }
 
@@ -54,6 +59,7 @@ impl Workflow {
         max_tool_calls: usize,
         user_prompt_override: Option<String>,
     ) -> Result<(), Error> {
+        self.toolset = Box::new(AllToolset::new_with_settings(request.user_settings()));
         self._init_tracer(request, "Code Generation Agentic Workflow");
 
         self._reset_chain();
@@ -67,7 +73,6 @@ impl Workflow {
         request: &mut dyn Request,
         cancel: &CancellationToken,
     ) -> Result<Chain, Error> {
-
         self._init_tracer(request, "[Behavior Tree] Code Generation Agentic Workflow");
 
         self._reset_chain();
@@ -78,7 +83,7 @@ impl Workflow {
             let step_user_prompt =
                 prompting::get_bt_tree_step_prompt(self.engine.get_type(), step, request);
 
-            self.toolset = step.toolset().build();
+            self.toolset = step.toolset().build_with_settings(request.user_settings());
 
             self._run(
                 request,
@@ -133,6 +138,7 @@ impl Workflow {
                 .unwrap_or(&base_user_prompt)
                 .to_string();
 
+            self.emit_inference_progress();
             self._trace_llm_start(user_prompt.clone());
 
             // Ask LLM to choose next tool
@@ -206,7 +212,9 @@ impl Workflow {
         if api_key.is_empty() {
             return;
         }
-        self.tracer = Some(TracingFacade::new(api_key, trace_name.to_string()));
+        let mut tracer = TracingFacade::new(api_key, trace_name.to_string());
+        tracer.start_span("Coding Agent", SpanKind::Agent);
+        self.tracer = Some(tracer);
     }
 
     fn _end_tracing(&mut self) {
@@ -234,6 +242,30 @@ impl Workflow {
             tracer.start_span("LLM generation", SpanKind::Generation);
             tracer.add_input("LLM generation", prompt);
         }
+    }
+
+    fn emit_inference_progress(&self) {
+        let Some(tx) = &self.progress_tx else {
+            return;
+        };
+        let options = [
+            "Thinking.. well kinda.",
+            "Assembling answer.",
+            "Consulting tokens.",
+            "Plotting next step.",
+            "Reasoning quietly.",
+            "Spinning up ideas.",
+        ];
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let index = (nanos % options.len() as u128) as usize;
+        let _ = tx.send(AgentToUiEvent::ProgressEvent {
+            step_name: "inference".to_string(),
+            phase: StepPhase::Before,
+            summary: options[index].to_string(),
+        });
     }
 
     fn _trace_llm_end(&mut self, output: String) {

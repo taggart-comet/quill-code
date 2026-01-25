@@ -2,8 +2,8 @@ use super::store::{PermissionStore, StoreError};
 use super::types::{PermissionConfig, PermissionDecision, PermissionRequest};
 use crate::domain::session::Request;
 use crate::domain::tools::Tool;
-use crate::utils::AskError;
 use crate::utils::paths::is_within_root;
+use crate::utils::AskError;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
@@ -77,14 +77,19 @@ impl PermissionChecker {
             return Ok(());
         }
 
-        let permission = super::types::Permission::new(
-            request.tool_name.clone(),
-            request.command.clone(),
-            if request.paths.len() == 1 {
+        let resource_pattern =
+            if decision == PermissionDecision::AlwaysAllow && request.tool_name == "web_search" {
+                None
+            } else if request.paths.len() == 1 {
                 Some(request.paths[0].to_string_lossy().to_string())
             } else {
                 None
-            },
+            };
+
+        let permission = super::types::Permission::new(
+            request.tool_name.clone(),
+            request.command.clone(),
+            resource_pattern,
             decision,
             request.scope.clone(),
             request.project_id,
@@ -158,7 +163,10 @@ impl PermissionChecker {
         })
     }
 
-    fn resolve_permission(&self, request: &PermissionRequest) -> Result<PermissionDecision, CheckerError> {
+    fn resolve_permission(
+        &self,
+        request: &PermissionRequest,
+    ) -> Result<PermissionDecision, CheckerError> {
         // Check specific command permissions first (highest priority)
         if let Some(command) = &request.command {
             if let Some(permission) = self.store.find_command_permission(
@@ -214,9 +222,9 @@ impl PermissionChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::permissions::types::Permission;
     use crate::domain::permissions::types::{PermissionConfig, PermissionDecision};
     use crate::domain::permissions::{PermissionRequest, PermissionScope};
-    use crate::domain::permissions::types::Permission;
     use crate::domain::session::{Request, SessionRequest};
     use crate::domain::tools::{Error, Tool, ToolResult};
     use std::path::{Path, PathBuf};
@@ -255,10 +263,7 @@ mod tests {
     }
 
     impl PermissionStore for TestStore {
-        fn create_permission(
-            &self,
-            permission: Permission,
-        ) -> Result<Permission, StoreError> {
+        fn create_permission(&self, permission: Permission) -> Result<Permission, StoreError> {
             self.created.lock().unwrap().push(permission.clone());
             Ok(permission)
         }
@@ -376,6 +381,10 @@ mod tests {
             "read only".to_string()
         }
 
+        fn get_input(&self) -> String {
+            String::new()
+        }
+
         fn get_affected_paths(&self, _request: &dyn Request) -> Vec<PathBuf> {
             self.paths.clone()
         }
@@ -410,6 +419,10 @@ mod tests {
             "write tool".to_string()
         }
 
+        fn get_input(&self) -> String {
+            String::new()
+        }
+
         fn get_affected_paths(&self, _request: &dyn Request) -> Vec<PathBuf> {
             self.paths.clone()
         }
@@ -439,6 +452,10 @@ mod tests {
 
         fn desc(&self) -> String {
             "command tool".to_string()
+        }
+
+        fn get_input(&self) -> String {
+            String::new()
         }
 
         fn get_command(&self, _request: &dyn Request) -> Option<String> {
@@ -588,11 +605,8 @@ mod tests {
             calls: Arc::clone(&calls),
             decision: PermissionDecision::AlwaysAllow,
         });
-        let checker = PermissionChecker::new_with_prompter(
-            store,
-            PermissionConfig::default(),
-            prompter,
-        );
+        let checker =
+            PermissionChecker::new_with_prompter(store, PermissionConfig::default(), prompter);
         let request = TestRequest { root };
         let tool = CommandTool {
             command: "rm -rf /".to_string(),
@@ -620,17 +634,18 @@ mod tests {
             PermissionScope::Project,
             Some(1),
         );
-        let store = Arc::new(TestStore::with_permissions(None, None, Some(path_permission)));
+        let store = Arc::new(TestStore::with_permissions(
+            None,
+            None,
+            Some(path_permission),
+        ));
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
             decision: PermissionDecision::AlwaysAllow,
         });
-        let checker = PermissionChecker::new_with_prompter(
-            store,
-            PermissionConfig::default(),
-            prompter,
-        );
+        let checker =
+            PermissionChecker::new_with_prompter(store, PermissionConfig::default(), prompter);
         let request = TestRequest { root };
         let tool = CommandTool {
             command: "echo hi".to_string(),
@@ -658,17 +673,18 @@ mod tests {
             PermissionScope::Project,
             Some(1),
         );
-        let store = Arc::new(TestStore::with_permissions(Some(tool_permission), None, None));
+        let store = Arc::new(TestStore::with_permissions(
+            Some(tool_permission),
+            None,
+            None,
+        ));
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
             decision: PermissionDecision::AlwaysAllow,
         });
-        let checker = PermissionChecker::new_with_prompter(
-            store,
-            PermissionConfig::default(),
-            prompter,
-        );
+        let checker =
+            PermissionChecker::new_with_prompter(store, PermissionConfig::default(), prompter);
         let request = TestRequest { root };
         let tool = CommandTool {
             command: "echo hi".to_string(),
@@ -746,14 +762,9 @@ mod tests {
 
     #[test]
     fn resolve_permission_no_ask_on_read_only() {
-        let abs = std::fs::canonicalize(".")
-            .expect("failed to canonicalize path");
+        let abs = std::fs::canonicalize(".").expect("failed to canonicalize path");
 
-        let store = Arc::new(TestStore::with_permissions(
-            None,
-            None,
-            None,
-        ));
+        let store = Arc::new(TestStore::with_permissions(None, None, None));
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),
@@ -837,7 +848,11 @@ mod tests {
             PermissionScope::Project,
             Some(1),
         );
-        let store = Arc::new(TestStore::with_permissions(None, None, Some(path_permission)));
+        let store = Arc::new(TestStore::with_permissions(
+            None,
+            None,
+            Some(path_permission),
+        ));
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),
@@ -869,7 +884,11 @@ mod tests {
             PermissionScope::Project,
             Some(1),
         );
-        let store = Arc::new(TestStore::with_permissions(Some(tool_permission), None, None));
+        let store = Arc::new(TestStore::with_permissions(
+            Some(tool_permission),
+            None,
+            None,
+        ));
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),

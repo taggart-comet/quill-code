@@ -1,6 +1,6 @@
 use crate::infrastructure::cli::components::{
-    bottom_info_panel, commands_menu, header_panel, input, loading_bar, main_body, permissions,
-    popup_container, request_indicator, settings_panel,
+    bottom_info_panel, commands_menu, file_changes, header_panel, input, loading_bar, main_body,
+    permissions, popup_container, request_indicator, settings_panel,
 };
 use crate::infrastructure::cli::helpers::{
     centered_rect, cursor_position, list_state, panel_block,
@@ -24,7 +24,10 @@ pub fn render(frame: &mut Frame, state: &UiState) {
     let header_height = 3u16;
     let info_height = 3u16;
     let mut input_lines = state.input_line_count();
-    input_lines = min(input_lines, crate::infrastructure::cli::state::INPUT_MAX_HEIGHT);
+    input_lines = min(
+        input_lines,
+        crate::infrastructure::cli::state::INPUT_MAX_HEIGHT,
+    );
     let mut input_box_height = (input_lines + 2) as u16;
 
     let indicator_height = 1u16;
@@ -32,8 +35,8 @@ pub fn render(frame: &mut Frame, state: &UiState) {
     if fixed_height > size.height {
         let overflow = fixed_height - size.height;
         let reduced = input_box_height.saturating_sub(overflow);
-        input_box_height = reduced
-            .max((crate::infrastructure::cli::state::INPUT_MIN_HEIGHT + 2) as u16);
+        input_box_height =
+            reduced.max((crate::infrastructure::cli::state::INPUT_MIN_HEIGHT + 2) as u16);
     }
 
     let constraints = [
@@ -50,7 +53,16 @@ pub fn render(frame: &mut Frame, state: &UiState) {
         .split(size);
 
     header_panel::render(frame, chunks[0], state, theme);
-    main_body::render(frame, chunks[1], state, theme);
+    if state.file_changes.is_some() {
+        let body_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(chunks[1]);
+        main_body::render(frame, body_chunks[0], state, theme);
+        file_changes::render(frame, body_chunks[1], state, theme);
+    } else {
+        main_body::render(frame, chunks[1], state, theme);
+    }
     request_indicator::render(frame, chunks[2], state, theme);
     input::render(frame, chunks[3], state, theme);
     bottom_info_panel::render(frame, chunks[4], state, theme);
@@ -65,7 +77,7 @@ pub fn render(frame: &mut Frame, state: &UiState) {
 fn render_popup(
     frame: &mut Frame,
     size: Rect,
-    input_area: Rect,
+    _input_area: Rect,
     state: &UiState,
     popup: &PopupState,
     theme: Theme,
@@ -135,7 +147,11 @@ fn render_popup(
 
                 let sections = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(2), Constraint::Length(1), Constraint::Min(0)])
+                    .constraints([
+                        Constraint::Length(2),
+                        Constraint::Length(1),
+                        Constraint::Min(0),
+                    ])
                     .split(inner);
 
                 let title = Paragraph::new(Text::from("Fetching OpenAI models"))
@@ -246,7 +262,11 @@ fn render_popup(
             let display_text = mask.repeat(raw_text.chars().count());
             let input_widget = Paragraph::new(Text::from(display_text))
                 .wrap(Wrap { trim: false })
-                .style(Style::default().fg(theme.active).add_modifier(Modifier::BOLD))
+                .style(
+                    Style::default()
+                        .fg(theme.active)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .block(panel_block(
                     theme,
                     theme.panel,
@@ -299,7 +319,11 @@ fn render_popup(
             let display_text = mask.repeat(raw_text.chars().count());
             let input_widget = Paragraph::new(Text::from(display_text))
                 .wrap(Wrap { trim: false })
-                .style(Style::default().fg(theme.active).add_modifier(Modifier::BOLD))
+                .style(
+                    Style::default()
+                        .fg(theme.active)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .block(panel_block(
                     theme,
                     theme.panel,

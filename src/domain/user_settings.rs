@@ -21,6 +21,7 @@ impl UserSettings {
         self.openai_tracing_enabled
     }
 
+    #[allow(dead_code)]
     pub fn current_model_name(&self) -> Option<&str> {
         self.current_model_name.as_deref()
     }

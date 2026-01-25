@@ -1,3 +1,4 @@
+use crate::domain::tools::FileChange;
 use crate::infrastructure::app_bus::{LocalModelInfo, OpenAiModelInfo};
 use crate::infrastructure::cli::loading_bar::LoadingBar;
 use ratatui_textarea::TextArea;
@@ -7,6 +8,7 @@ use std::time::{Duration, Instant};
 pub const INPUT_MIN_HEIGHT: usize = 3;
 pub const INPUT_MAX_HEIGHT: usize = 6;
 pub const PROGRESS_HISTORY_LIMIT: usize = 200;
+pub const MAIN_BODY_SCROLL_STEP: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgressKind {
@@ -39,6 +41,12 @@ pub struct ProgressEntry {
     pub text: String,
     pub kind: ProgressKind,
     pub active: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileChangesDisplay {
+    pub request_id: i64,
+    pub changes: Vec<FileChange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,12 +140,15 @@ pub struct UiState {
     pub current_model: String,
     pub mode: UiMode,
     pub popup_input: Option<PopupInput>,
+    pub main_body_scroll: usize,
     pub models: ModelsCache,
     pub settings: SettingsCache,
     pub loading_bar: LoadingBar,
     pub openai_fetch_pending: bool,
     pub request_in_flight: Option<RequestIndicator>,
     pub request_status: Option<RequestStatusDisplay>,
+    pub request_progress: Option<String>,
+    pub file_changes: Option<FileChangesDisplay>,
     pub should_quit: bool,
 }
 
@@ -151,6 +162,7 @@ impl UiState {
             current_model: "unknown".to_string(),
             mode: UiMode::Normal,
             popup_input: None,
+            main_body_scroll: 0,
             models: ModelsCache {
                 status: LoadStatus::Unknown,
                 local: Vec::new(),
@@ -168,6 +180,8 @@ impl UiState {
             openai_fetch_pending: false,
             request_in_flight: None,
             request_status: None,
+            request_progress: None,
+            file_changes: None,
             should_quit: false,
         }
     }
@@ -186,6 +200,10 @@ impl UiState {
                 existing.active = false;
             }
             self.active_progress = Some(self.progress.len());
+        }
+        if self.main_body_scroll > 0 {
+            let added_lines = entry.text.lines().count().max(1);
+            self.main_body_scroll = self.main_body_scroll.saturating_add(added_lines);
         }
         self.progress.push_back(entry);
     }

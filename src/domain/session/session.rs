@@ -23,6 +23,7 @@ impl Session {
         self.id
     }
 
+    #[allow(dead_code)]
     pub fn project_id(&self) -> i64 {
         self.project_id
     }

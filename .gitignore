@@ -1,4 +1,5 @@
 /target
+crates/*/target
 /.idea
 /.venv
 venv/

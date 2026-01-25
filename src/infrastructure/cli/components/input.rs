@@ -4,7 +4,7 @@ use crate::infrastructure::cli::theme::{Theme, INPUT_PADDING};
 use ratatui::style::Style;
 use ratatui::text::Text;
 use ratatui::widgets::{Paragraph, Wrap};
-use ratatui::{Frame, layout::Rect};
+use ratatui::{layout::Rect, Frame};
 
 pub fn render(frame: &mut Frame, area: Rect, state: &UiState, theme: Theme) {
     let visible_lines = area

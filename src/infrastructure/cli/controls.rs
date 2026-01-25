@@ -1,13 +1,15 @@
 use crate::domain::permissions::PermissionDecision;
 use crate::infrastructure::app_bus::{EventBus, UiToAgentEvent};
-use crate::infrastructure::cli::helpers::{
-    delete_next_char, delete_prev_char, insert_char, next_char_boundary, prev_char_boundary,
-};
-use crate::infrastructure::cli::state::{LoadStatus, PopupInput, PopupState, UiMode, UiState};
 use crate::infrastructure::cli::actions::{
     change_settings, insert_openai_key, select_openai_model,
 };
 use crate::infrastructure::cli::components::{commands_menu, permissions};
+use crate::infrastructure::cli::helpers::{
+    delete_next_char, delete_prev_char, insert_char, next_char_boundary, prev_char_boundary,
+};
+use crate::infrastructure::cli::state::{
+    LoadStatus, PopupInput, PopupState, UiMode, UiState, MAIN_BODY_SCROLL_STEP,
+};
 use crate::infrastructure::cli::views::main_view::{
     model_entries, openai_available_entries, openai_available_filtered,
 };
@@ -49,6 +51,14 @@ fn handle_normal_key(
     key: KeyEvent,
 ) -> Result<(), String> {
     match key.code {
+        KeyCode::PageUp => {
+            state.main_body_scroll = state.main_body_scroll.saturating_add(MAIN_BODY_SCROLL_STEP);
+            return Ok(());
+        }
+        KeyCode::PageDown => {
+            state.main_body_scroll = state.main_body_scroll.saturating_sub(MAIN_BODY_SCROLL_STEP);
+            return Ok(());
+        }
         KeyCode::Char('/') if input_is_empty(state) => {
             state.input.input(key);
             state.mode = UiMode::CommandsMenu { selected: 0 };
@@ -167,10 +177,7 @@ fn handle_popup_key(
                     let filtered = openai_available_filtered(state, filter);
                     if let Some(name) = filtered.get(*selected) {
                         select_openai_model::handle_openai_available_selection(
-                            bus,
-                            conn,
-                            state,
-                            name,
+                            bus, conn, state, name,
                         )?;
                     }
                 }

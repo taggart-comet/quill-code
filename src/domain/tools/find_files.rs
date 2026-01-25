@@ -1,5 +1,7 @@
 use crate::domain::session::Request;
-use crate::domain::tools::{Error, Tool, ToolResult};
+use crate::domain::tools::{
+    short_label_from_path, Error, Tool, ToolResult, TOOL_OUTPUT_BUDGET_CHARS,
+};
 use crate::utils::paths::is_within_root;
 use serde::Deserialize;
 use serde_json::json;
@@ -234,6 +236,10 @@ impl Tool for FindFiles {
         )
     }
 
+    fn get_output_budget(&self) -> Option<usize> {
+        Some(TOOL_OUTPUT_BUDGET_CHARS)
+    }
+
     fn get_input(&self) -> String {
         self.input
             .lock()
@@ -241,6 +247,20 @@ impl Tool for FindFiles {
             .as_ref()
             .map(|input| input.raw.clone())
             .unwrap_or_default()
+    }
+
+    fn get_progress_message(&self, _request: &dyn Request) -> String {
+        match self.load_input() {
+            Ok(input) => {
+                let label = short_label_from_path(&input.query);
+                if label.is_empty() {
+                    "Finding files".to_string()
+                } else {
+                    format!("Finding {}", label)
+                }
+            }
+            Err(_) => "Finding files".to_string(),
+        }
     }
 
     fn get_affected_paths(&self, request: &dyn Request) -> Vec<PathBuf> {

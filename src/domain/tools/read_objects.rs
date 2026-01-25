@@ -1,4 +1,4 @@
-use super::{Error, Tool, ToolResult};
+use super::{short_filename, Error, Tool, ToolResult, TOOL_OUTPUT_BUDGET_CHARS};
 use crate::domain::session::Request;
 use crate::utils::{Lang, ObjectKind, ParsedObject, UniversalParser};
 use serde::Deserialize;
@@ -229,6 +229,10 @@ impl Tool for ReadObjects {
         )
     }
 
+    fn get_output_budget(&self) -> Option<usize> {
+        Some(TOOL_OUTPUT_BUDGET_CHARS)
+    }
+
     fn get_input(&self) -> String {
         self.input
             .lock()
@@ -236,6 +240,13 @@ impl Tool for ReadObjects {
             .as_ref()
             .map(|input| input.raw.clone())
             .unwrap_or_default()
+    }
+
+    fn get_progress_message(&self, _request: &dyn Request) -> String {
+        match self.load_input() {
+            Ok(input) => format!("Reading {}", short_filename(&input.full_path_to_file)),
+            Err(_) => "Reading files".to_string(),
+        }
     }
 
     fn get_affected_paths(&self, request: &dyn Request) -> Vec<PathBuf> {

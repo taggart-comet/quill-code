@@ -6,6 +6,7 @@ pub mod workflow;
 
 pub use chain::Chain;
 pub use step::ChainStep;
+#[allow(unused_imports)]
 pub use tool_runner::ToolRunner;
 pub use toolset::AllToolset;
 pub use workflow::Workflow;

@@ -45,7 +45,7 @@ pub fn loading_bar_line_with_colors(
     inactive_color: Color,
 ) -> Line<'static> {
     let bar_width = width.max(6);
-    let segment_width = (bar_width / 4).max(3).min(bar_width);
+    let segment_width = 3.min(bar_width);
     let max_offset = bar_width.saturating_sub(segment_width);
     let offset = ((max_offset as f64) * ratio).round() as usize;
     let mut spans = Vec::new();
@@ -58,7 +58,9 @@ pub fn loading_bar_line_with_colors(
     }
     spans.push(Span::styled(
         "=".repeat(segment_width),
-        Style::default().fg(active_color).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(active_color)
+            .add_modifier(Modifier::BOLD),
     ));
     let remaining = bar_width.saturating_sub(offset + segment_width);
     if remaining > 0 {

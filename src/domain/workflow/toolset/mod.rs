@@ -1,12 +1,12 @@
 mod all;
 mod edit;
-mod read;
 mod none;
+mod read;
 
 pub use all::AllToolset;
 pub use edit::EditToolset;
-pub use read::ReadToolset;
 pub use none::NoneToolset;
+pub use read::ReadToolset;
 #[derive(Clone, Copy)]
 pub enum ToolsetType {
     None,
@@ -17,10 +17,17 @@ pub enum ToolsetType {
 
 impl ToolsetType {
     pub fn build(self) -> Box<dyn Toolset> {
+        self.build_with_settings(None)
+    }
+
+    pub fn build_with_settings(
+        self,
+        settings: Option<&crate::domain::UserSettings>,
+    ) -> Box<dyn Toolset> {
         match self {
             ToolsetType::Read => Box::new(ReadToolset::new()),
             ToolsetType::Edit => Box::new(EditToolset::new()),
-            ToolsetType::All => Box::new(AllToolset::new()),
+            ToolsetType::All => Box::new(AllToolset::new_with_settings(settings)),
             ToolsetType::None => Box::new(NoneToolset::new()),
         }
     }

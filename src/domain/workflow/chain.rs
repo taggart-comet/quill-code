@@ -86,4 +86,24 @@ impl Chain {
             .collect::<Vec<_>>()
             .join("\n")
     }
+
+    #[allow(dead_code)]
+    pub fn total_payload_len_chars(&self) -> usize {
+        let mut total = 0usize;
+
+        for step in &self.steps {
+            total += step.summary.chars().count();
+            total += step.context_payload.chars().count();
+            total += step.input_payload.chars().count();
+            if let Some(output) = &step.tool_output {
+                total += output.chars().count();
+            }
+        }
+
+        if let Some(message) = &self.final_message {
+            total += message.chars().count();
+        }
+
+        total
+    }
 }

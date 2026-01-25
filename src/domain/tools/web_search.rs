@@ -1,5 +1,6 @@
 use crate::domain::session::Request;
-use crate::domain::tools::{Tool, ToolResult};
+use crate::domain::tools::{short_words, Tool, ToolResult, TOOL_OUTPUT_BUDGET_CHARS};
+use regex::Regex;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -44,10 +45,47 @@ impl WebSearch {
     }
 
     fn load_input(&self) -> Result<WebSearchInput, String> {
-        let guard = self.input.lock().map_err(|_| "Input lock poisoned".to_string())?;
+        let guard = self
+            .input
+            .lock()
+            .map_err(|_| "Input lock poisoned".to_string())?;
         guard
             .clone()
             .ok_or_else(|| "Missing input for web_search".to_string())
+    }
+
+    fn permission_target_from_query(query: &str) -> Option<String> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        Self::extract_hostname(trimmed).or_else(|| Some(format!("search:{}", trimmed)))
+    }
+
+    fn extract_hostname(query: &str) -> Option<String> {
+        let url_re = Regex::new(r"(?i)https?://([a-z0-9.-]+)").ok()?;
+        if let Some(caps) = url_re.captures(query) {
+            if let Some(host) = caps.get(1) {
+                return Some(host.as_str().to_string());
+            }
+        }
+
+        let site_re = Regex::new(r"(?i)\bsite:([a-z0-9.-]+)").ok()?;
+        if let Some(caps) = site_re.captures(query) {
+            if let Some(host) = caps.get(1) {
+                return Some(host.as_str().to_string());
+            }
+        }
+
+        let domain_re = Regex::new(r"(?i)\b([a-z0-9-]+(?:\.[a-z0-9-]+)+)\b").ok()?;
+        for caps in domain_re.captures_iter(query) {
+            if let Some(host) = caps.get(1) {
+                return Some(host.as_str().to_string());
+            }
+        }
+
+        None
     }
 }
 
@@ -120,11 +158,9 @@ impl Tool for WebSearch {
             Ok(results) => {
                 let output = WebSearchOutput { results };
                 match serde_json::to_string(&output) {
-                    Ok(json_output) => ToolResult::ok(
-                        self.name().to_string(),
-                        input.raw.clone(),
-                        json_output,
-                    ),
+                    Ok(json_output) => {
+                        ToolResult::ok(self.name().to_string(), input.raw.clone(), json_output)
+                    }
                     Err(e) => ToolResult::error(
                         self.name().to_string(),
                         input.raw.clone(),
@@ -150,7 +186,7 @@ impl Tool for WebSearch {
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Maximum number of results to return (default: 5)",
+                    "description": "Maximum number of results to return (default: 5, excessive results may be truncated)",
                     "default": 5
                 }
             },
@@ -159,7 +195,11 @@ impl Tool for WebSearch {
     }
 
     fn desc(&self) -> String {
-        "Search the web using Brave Search API. Requires web search to be enabled in settings with a valid Brave API key.".to_string()
+        "Use `web_search` to search things on the web using and find useful libraries and documentation to help implementation.".to_string()
+    }
+
+    fn get_output_budget(&self) -> Option<usize> {
+        Some(TOOL_OUTPUT_BUDGET_CHARS)
     }
 
     fn get_input(&self) -> String {
@@ -171,13 +211,38 @@ impl Tool for WebSearch {
             .unwrap_or_default()
     }
 
+    fn get_progress_message(&self, _request: &dyn Request) -> String {
+        let query = self
+            .input
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|input| input.query.clone())
+            .unwrap_or_default();
+        let label = short_words(&query, 3);
+        if label.is_empty() {
+            "Searching web".to_string()
+        } else {
+            format!("Searching {}", label)
+        }
+    }
+
     fn get_command(&self, _request: &dyn Request) -> Option<String> {
         None
     }
 
     fn get_affected_paths(&self, _request: &dyn Request) -> Vec<PathBuf> {
-        // Return the Brave API hostname for permission checking
-        vec![PathBuf::from("api.search.brave.com")]
+        let query = self
+            .input
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|input| input.query.clone()));
+
+        query
+            .as_deref()
+            .and_then(Self::permission_target_from_query)
+            .map(|target| vec![PathBuf::from(target)])
+            .unwrap_or_default()
     }
 }
 
@@ -239,5 +304,311 @@ impl WebSearch {
         }
 
         Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::permissions::{
+        checker::{PermissionChecker, PermissionPrompter},
+        store::{PermissionStore, StoreError},
+        types::{PermissionConfig, PermissionDecision, PermissionRequest, PermissionScope},
+    };
+    use crate::domain::session::{Request, SessionRequest};
+    use crate::domain::UserSettings;
+    use crate::repository::UserSettingsRow;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    struct TestStore {
+        created: Mutex<Vec<crate::domain::permissions::types::Permission>>,
+        tool_permission: Mutex<Option<crate::domain::permissions::types::Permission>>,
+    }
+
+    impl TestStore {
+        fn new() -> Self {
+            Self {
+                created: Mutex::new(Vec::new()),
+                tool_permission: Mutex::new(None),
+            }
+        }
+
+        fn with_tool_permission(permission: crate::domain::permissions::types::Permission) -> Self {
+            Self {
+                created: Mutex::new(Vec::new()),
+                tool_permission: Mutex::new(Some(permission)),
+            }
+        }
+    }
+
+    impl PermissionStore for TestStore {
+        fn create_permission(
+            &self,
+            permission: crate::domain::permissions::types::Permission,
+        ) -> Result<crate::domain::permissions::types::Permission, StoreError> {
+            self.created.lock().unwrap().push(permission.clone());
+            Ok(permission)
+        }
+
+        fn find_tool_permission(
+            &self,
+            tool: &str,
+            _project_id: Option<i32>,
+        ) -> Result<Option<crate::domain::permissions::types::Permission>, StoreError> {
+            let permission = self.tool_permission.lock().unwrap().clone();
+            if let Some(permission) = permission {
+                if permission.matches(tool, None, None::<&PathBuf>) {
+                    return Ok(Some(permission));
+                }
+            }
+            Ok(None)
+        }
+
+        fn find_command_permission(
+            &self,
+            _tool: &str,
+            _command: &str,
+            _project_id: Option<i32>,
+        ) -> Result<Option<crate::domain::permissions::types::Permission>, StoreError> {
+            Ok(None)
+        }
+
+        fn find_path_permission(
+            &self,
+            _tool: &str,
+            _path: &PathBuf,
+            _project_id: Option<i32>,
+        ) -> Result<Option<crate::domain::permissions::types::Permission>, StoreError> {
+            Ok(None)
+        }
+    }
+
+    struct TestPrompter {
+        calls: Arc<AtomicUsize>,
+        decision: PermissionDecision,
+    }
+
+    impl PermissionPrompter for TestPrompter {
+        fn ask_permission(
+            &self,
+            _request: &PermissionRequest,
+        ) -> Result<PermissionDecision, crate::utils::AskError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.decision.clone())
+        }
+    }
+
+    struct TestRequest {
+        root: PathBuf,
+        user_settings: Option<UserSettings>,
+    }
+
+    impl Request for TestRequest {
+        fn history(&self) -> &[SessionRequest] {
+            &[]
+        }
+
+        fn current_request(&self) -> &str {
+            "test"
+        }
+
+        fn project_root(&self) -> &Path {
+            &self.root
+        }
+
+        fn user_settings(&self) -> Option<&UserSettings> {
+            self.user_settings.as_ref()
+        }
+
+        fn project_id(&self) -> Option<i32> {
+            Some(1)
+        }
+
+        fn set_final_message(&mut self, _message: String) {}
+    }
+
+    fn make_mock_user_settings(
+        web_search_enabled: bool,
+        brave_api_key: Option<&str>,
+    ) -> UserSettings {
+        let row = UserSettingsRow {
+            id: 1,
+            openai_api_key: None,
+            openai_tracing_enabled: false,
+            use_behavior_trees: false,
+            current_model_id: None,
+            web_search_enabled,
+            brave_api_key: brave_api_key.map(String::from),
+        };
+        UserSettings::from(row)
+    }
+
+    #[test]
+    fn web_search_prompts_permission_when_not_previously_authorized() {
+        let root = PathBuf::from("/tmp");
+        let user_settings = Some(make_mock_user_settings(true, Some("test-key")));
+
+        let store = Arc::new(TestStore::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let prompter = Arc::new(TestPrompter {
+            calls: Arc::clone(&calls),
+            decision: PermissionDecision::AlwaysAllow,
+        });
+        let checker = PermissionChecker::new_with_prompter(
+            store,
+            PermissionConfig {
+                default_decision: PermissionDecision::Ask,
+                ..PermissionConfig::default()
+            },
+            prompter,
+        );
+
+        let request = TestRequest {
+            root,
+            user_settings,
+        };
+        let web_search = WebSearch::new();
+
+        let allowed = checker.check(&web_search, &request, Some(1)).unwrap();
+
+        assert!(allowed);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn web_search_uses_stored_tool_permission() {
+        let root = PathBuf::from("/tmp");
+        let user_settings = Some(make_mock_user_settings(true, Some("test-key")));
+
+        let tool_permission = crate::domain::permissions::types::Permission::new(
+            "web_search".to_string(),
+            None,
+            None,
+            PermissionDecision::AlwaysAllow,
+            PermissionScope::Project,
+            Some(1),
+        );
+        let store = Arc::new(TestStore::with_tool_permission(tool_permission));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let prompter = Arc::new(TestPrompter {
+            calls: Arc::clone(&calls),
+            decision: PermissionDecision::AlwaysAllow,
+        });
+        let checker = PermissionChecker::new_with_prompter(
+            store,
+            PermissionConfig {
+                default_decision: PermissionDecision::Ask,
+                ..PermissionConfig::default()
+            },
+            prompter,
+        );
+
+        let request = TestRequest {
+            root,
+            user_settings,
+        };
+        let web_search = WebSearch::new();
+
+        let allowed = checker.check(&web_search, &request, Some(1)).unwrap();
+
+        assert!(allowed);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn web_search_permission_request_includes_query_hostname() {
+        let root = PathBuf::from("/tmp");
+        let user_settings = Some(make_mock_user_settings(true, Some("test-key")));
+
+        let store = Arc::new(TestStore::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let decision_to_return = Arc::new(Mutex::new(PermissionDecision::AlwaysAllow));
+        let captured_request = Arc::new(Mutex::new(None::<PermissionRequest>));
+
+        struct CapturingPrompter {
+            calls: Arc<AtomicUsize>,
+            decision: Arc<Mutex<PermissionDecision>>,
+            captured: Arc<Mutex<Option<PermissionRequest>>>,
+        }
+
+        impl PermissionPrompter for CapturingPrompter {
+            fn ask_permission(
+                &self,
+                request: &PermissionRequest,
+            ) -> Result<PermissionDecision, crate::utils::AskError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                *self.captured.lock().unwrap() = Some(request.clone());
+                Ok(self.decision.lock().unwrap().clone())
+            }
+        }
+
+        let prompter = Arc::new(CapturingPrompter {
+            calls: Arc::clone(&calls),
+            decision: Arc::clone(&decision_to_return),
+            captured: Arc::clone(&captured_request),
+        });
+
+        let checker = PermissionChecker::new_with_prompter(
+            store,
+            PermissionConfig {
+                default_decision: PermissionDecision::Ask,
+                ..PermissionConfig::default()
+            },
+            prompter,
+        );
+
+        let request = TestRequest {
+            root,
+            user_settings,
+        };
+        let web_search = WebSearch::new();
+        let _ =
+            web_search.parse_input(r#"{"query":"site:docs.rs serde","max_results":5}"#.to_string());
+
+        let _allowed = checker.check(&web_search, &request, Some(1)).unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let captured_req = captured_request.lock().unwrap().as_ref().unwrap().clone();
+        assert_eq!(captured_req.tool_name, "web_search");
+        assert_eq!(captured_req.paths, vec![PathBuf::from("docs.rs")]);
+    }
+
+    #[test]
+    fn web_search_always_allow_stores_tool_permission() {
+        let root = PathBuf::from("/tmp");
+        let user_settings = Some(make_mock_user_settings(true, Some("test-key")));
+
+        let store = Arc::new(TestStore::new());
+        let prompter = Arc::new(TestPrompter {
+            calls: Arc::new(AtomicUsize::new(0)),
+            decision: PermissionDecision::AlwaysAllow,
+        });
+        let checker = PermissionChecker::new_with_prompter(
+            store.clone(),
+            PermissionConfig {
+                default_decision: PermissionDecision::Ask,
+                ..PermissionConfig::default()
+            },
+            prompter,
+        );
+
+        let request = TestRequest {
+            root,
+            user_settings,
+        };
+        let web_search = WebSearch::new();
+        let _ =
+            web_search.parse_input(r#"{"query":"site:docs.rs serde","max_results":5}"#.to_string());
+
+        let allowed = checker.check(&web_search, &request, Some(1)).unwrap();
+
+        assert!(allowed);
+        let created = store.created.lock().unwrap();
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].tool_name, "web_search");
+        assert_eq!(created[0].resource_pattern, None);
     }
 }

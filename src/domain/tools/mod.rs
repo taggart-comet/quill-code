@@ -17,6 +17,7 @@ pub use web_search::WebSearch;
 use crate::domain::session::Request;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::Path;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -28,6 +29,8 @@ pub enum Error {
     #[error("io error: {0}")]
     Io(String),
 }
+
+pub const TOOL_OUTPUT_BUDGET_CHARS: usize = 2000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileChange {
@@ -73,6 +76,14 @@ impl ToolResult {
         self
     }
 
+    pub fn apply_output_budget(&mut self, limit: usize) {
+        if self.is_successful {
+            self.output = truncate_with_notice(&self.output, limit);
+        } else {
+            self.error_message = truncate_with_notice(&self.error_message, limit);
+        }
+    }
+
     pub fn output_string(&self) -> String {
         if self.is_successful {
             self.output.clone()
@@ -115,6 +126,20 @@ impl ToolResult {
     }
 }
 
+fn truncate_with_notice(text: &str, limit: usize) -> String {
+    let current_len = text.chars().count();
+    if current_len <= limit {
+        return text.to_string();
+    }
+
+    let mut truncated: String = text.chars().take(limit).collect();
+    truncated.push_str(&format!(
+        "\n[output truncated to {} chars; refine your query to limit output]",
+        limit
+    ));
+    truncated
+}
+
 pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn parse_input(&self, input: String) -> Option<Error>;
@@ -122,6 +147,12 @@ pub trait Tool: Send + Sync {
     fn parameters(&self) -> Value;
     fn desc(&self) -> String;
     fn get_input(&self) -> String;
+    fn get_progress_message(&self, _request: &dyn Request) -> String {
+        format!("Running {}", self.name())
+    }
+    fn get_output_budget(&self) -> Option<usize> {
+        None
+    }
 
     // Permission-related methods
     fn get_command(&self, _request: &dyn Request) -> Option<String> {
@@ -132,6 +163,56 @@ pub trait Tool: Send + Sync {
     }
     fn is_read_only(&self) -> bool {
         false
+    }
+}
+
+pub fn short_filename(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return "files".to_string();
+    }
+    let name = Path::new(trimmed)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(trimmed);
+    if name.is_empty() {
+        "files".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+pub fn short_label_from_path(label: &str) -> String {
+    let trimmed = label.trim();
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        short_filename(trimmed)
+    } else {
+        trimmed.to_string()
+    }
+}
+
+pub fn short_words(input: &str, max_words: usize) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let mut words = trimmed.split_whitespace();
+    let mut parts = Vec::new();
+    for _ in 0..max_words {
+        if let Some(word) = words.next() {
+            parts.push(word);
+        } else {
+            break;
+        }
+    }
+    let has_more = words.next().is_some();
+    let base = parts.join(" ");
+    if base.is_empty() {
+        String::new()
+    } else if has_more {
+        format!("{}...", base)
+    } else {
+        base
     }
 }
 

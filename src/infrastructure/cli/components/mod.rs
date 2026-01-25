@@ -1,5 +1,6 @@
 pub mod bottom_info_panel;
 pub mod commands_menu;
+pub mod file_changes;
 pub mod header_panel;
 pub mod input;
 pub mod loading_bar;

@@ -3,12 +3,12 @@ use crate::infrastructure::app_bus::{
     AgentToUiEvent, EventBus, ModelSelection, RequestStatus, StepPhase,
 };
 use crate::infrastructure::cli::state::{
-    LoadStatus, PopupState, ProgressEntry, ProgressKind, RequestIndicator, RequestStatusDisplay,
-    UiMode, UiState,
+    FileChangesDisplay, LoadStatus, PopupState, ProgressEntry, ProgressKind, RequestIndicator,
+    RequestStatusDisplay, UiMode, UiState,
 };
 use crate::infrastructure::db;
-use crate::infrastructure::init::get_current_model_name;
 use crate::infrastructure::inference::openai::OpenAIEngine;
+use crate::infrastructure::init::get_current_model_name;
 
 use crate::repository::{MetaRepository, ModelsRepository, UserSettingsRepository};
 use crossterm::event::{self, Event as CrosstermEvent};
@@ -102,29 +102,19 @@ fn handle_agent_event(
                 started_at: std::time::Instant::now(),
             });
             state.request_status = None;
+            state.request_progress = None;
+            state.file_changes = None;
         }
         AgentToUiEvent::ProgressEvent {
-            step_name,
+            step_name: _step_name,
             phase,
             summary,
         } => {
-            let prefix = match phase {
-                StepPhase::Before => "<Before>",
-                StepPhase::After => "<After>",
-            };
-            let text = format!("{} {} - {}", prefix, step_name, summary);
-            let active = matches!(phase, StepPhase::Before);
-            if matches!(phase, StepPhase::After) {
-                for entry in state.progress.iter_mut() {
-                    entry.active = false;
-                }
-                state.active_progress = None;
+            if matches!(phase, StepPhase::Before) {
+                state.request_progress = Some(summary.clone());
+            } else {
+                state.request_progress = None;
             }
-            state.push_progress(ProgressEntry {
-                text,
-                kind: ProgressKind::Info,
-                active,
-            });
         }
         AgentToUiEvent::RequestFinishedEvent {
             request_id,
@@ -152,6 +142,7 @@ fn handle_agent_event(
                     finished_at: std::time::Instant::now(),
                 });
             }
+            state.request_progress = None;
             if let Some(summary) = summary {
                 state.push_progress(ProgressEntry {
                     text: summary,
@@ -175,21 +166,10 @@ fn handle_agent_event(
             request_id,
             changes,
         } => {
-            state.push_progress(ProgressEntry {
-                text: format!("<Changed> Files changed in request {}:", request_id),
-                kind: ProgressKind::Info,
-                active: false,
+            state.file_changes = Some(FileChangesDisplay {
+                request_id,
+                changes,
             });
-            for change in changes {
-                state.push_progress(ProgressEntry {
-                    text: format!(
-                        "{}: +{} -{}",
-                        change.path, change.added_lines, change.deleted_lines
-                    ),
-                    kind: ProgressKind::Info,
-                    active: false,
-                });
-            }
         }
         AgentToUiEvent::SettingsSnapshot => {
             refresh_settings_from_db(conn, state)?;
@@ -241,7 +221,10 @@ pub(crate) fn refresh_models_from_db(conn: &Connection, state: &mut UiState) -> 
     Ok(())
 }
 
-pub(crate) fn refresh_settings_from_db(conn: &Connection, state: &mut UiState) -> Result<(), String> {
+pub(crate) fn refresh_settings_from_db(
+    conn: &Connection,
+    state: &mut UiState,
+) -> Result<(), String> {
     let settings_repo = UserSettingsRepository::new(conn);
     let settings = settings_repo.get_current().map_err(|e| e.to_string())?;
     state.settings.use_behavior_trees = settings.use_behavior_trees;
@@ -345,7 +328,10 @@ pub(crate) fn update_model_selection_in_db(
     Ok(())
 }
 
-pub(crate) fn fetch_openai_available_models(conn: &Connection, state: &mut UiState) -> Result<(), String> {
+pub(crate) fn fetch_openai_available_models(
+    conn: &Connection,
+    state: &mut UiState,
+) -> Result<(), String> {
     let settings_repo = UserSettingsRepository::new(conn);
     let settings = settings_repo.get_current().map_err(|e| e.to_string())?;
     let api_key = match settings.openai_api_key {
@@ -378,10 +364,10 @@ pub(crate) fn fetch_openai_available_models(conn: &Connection, state: &mut UiSta
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::app_bus::{LocalModelInfo, ModelSelection, OpenAiModelInfo};
     use crate::infrastructure::cli::helpers::{
         cursor_position, delete_next_char, delete_prev_char, insert_char, next_char_boundary,
         prev_char_boundary,
@@ -389,7 +375,6 @@ mod tests {
     use crate::infrastructure::cli::views::main_view::{
         model_entries, openai_available_entries, openai_available_filtered, ModelEntry,
     };
-    use crate::infrastructure::app_bus::{LocalModelInfo, ModelSelection, OpenAiModelInfo};
     use crate::repository::{MetaRepository, ModelsRepository, UserSettingsRepository};
     use directories::ProjectDirs;
     use std::fs::{self, File};
@@ -540,10 +525,16 @@ mod tests {
             let model_id = settings.current_model_id.expect("model id");
 
             let meta_repo = MetaRepository::new(&conn);
-            assert_eq!(meta_repo.get_last_used_model_id().expect("meta"), Some(model_id));
+            assert_eq!(
+                meta_repo.get_last_used_model_id().expect("meta"),
+                Some(model_id)
+            );
 
             let models_repo = ModelsRepository::new(&conn);
-            let model = models_repo.find_by_id(model_id).expect("model row").expect("model");
+            let model = models_repo
+                .find_by_id(model_id)
+                .expect("model row")
+                .expect("model");
             assert_eq!(model.model_type, ModelType::OpenAI);
             assert_eq!(model.model_name.as_deref(), Some("gpt-4o"));
         });
@@ -570,10 +561,16 @@ mod tests {
             let model_id = settings.current_model_id.expect("model id");
 
             let meta_repo = MetaRepository::new(&conn);
-            assert_eq!(meta_repo.get_last_used_model_id().expect("meta"), Some(model_id));
+            assert_eq!(
+                meta_repo.get_last_used_model_id().expect("meta"),
+                Some(model_id)
+            );
 
             let models_repo = ModelsRepository::new(&conn);
-            let model = models_repo.find_by_id(model_id).expect("model row").expect("model");
+            let model = models_repo
+                .find_by_id(model_id)
+                .expect("model row")
+                .expect("model");
             assert_eq!(model.model_type, ModelType::Local);
             assert_eq!(model.gguf_file_path.as_deref(), Some(canonical.as_str()));
         });

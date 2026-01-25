@@ -60,6 +60,7 @@ ratatui-textarea = "0.4.1"
   openai-agents-tracing = { path = "crates/openai-agents-tracing-rust" }
   similar = "2.6"
   urlencoding = "2.1"
+pulldown-cmark = "0.10"
 
 [dev-dependencies]
 

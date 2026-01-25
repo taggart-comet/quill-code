@@ -28,14 +28,12 @@ pub fn get_system_prompt(model_type: ModelType) -> String {
             "You are Drastis, a coding agent. \n\
  Use the available tools to gather context and make changes. \
  When using tools, pass JSON arguments that match their parameters. \n\
- Web search policy: use at most 2 web_search calls per user request. \
- Ask for permission before accessing any new domain. \n\
  Runtime: os={}, shell={}.",
             os_name, shell_name
         )
     } else {
         format!(
-            "You are Drastis, a coding agent. Use available tools to gather context and make changes. Be concise and accurate. Web search policy: use at most 2 web_search calls per user request and ask for permission before accessing any new domain. Runtime: os={}, shell={}.",
+            "You are Drastis, a coding agent. Use available tools to gather context and make changes. Be concise and accurate. Runtime: os={}, shell={}.",
             os_name, shell_name
         )
     }

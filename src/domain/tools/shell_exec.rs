@@ -1,5 +1,5 @@
 use crate::domain::session::Request;
-use crate::domain::tools::{Error, Tool, ToolResult};
+use crate::domain::tools::{short_words, Error, Tool, ToolResult, TOOL_OUTPUT_BUDGET_CHARS};
 use serde::Deserialize;
 use serde_json::json;
 use std::path::PathBuf;
@@ -161,6 +161,10 @@ Please DO NOT use it to read the full content of a file, this is not efficient, 
         )
     }
 
+    fn get_output_budget(&self) -> Option<usize> {
+        Some(TOOL_OUTPUT_BUDGET_CHARS)
+    }
+
     fn get_input(&self) -> String {
         self.input
             .lock()
@@ -168,6 +172,22 @@ Please DO NOT use it to read the full content of a file, this is not efficient, 
             .as_ref()
             .map(|input| input.raw.clone())
             .unwrap_or_default()
+    }
+
+    fn get_progress_message(&self, _request: &dyn Request) -> String {
+        let command = self
+            .input
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|input| input.command.clone())
+            .unwrap_or_default();
+        let label = short_words(&command, 2);
+        if label.is_empty() {
+            "Running command".to_string()
+        } else {
+            format!("Running {}", label)
+        }
     }
 
     fn get_command(&self, _request: &dyn Request) -> Option<String> {

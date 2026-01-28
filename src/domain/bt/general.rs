@@ -10,17 +10,17 @@ impl GeneralTree {
         GeneralTree{
             head: Box::new(BTStepNode {
                 prompt: "Locate impact area: list likely files/modules, then read only the minimal code needed to confirm APIs, types, and behavior.".to_string(),
-                toolset: ToolsetType::Read,
+                toolset: ToolsetType::Discover,
                 max_tools_calls: 4,
                 next_step: Some(Box::new(BTStepNode{
                     prompt: "Design the change: choose between extending existing modules vs new code, \
                         prefer minimal changes, choose to write the functionality or there's a good opensource library for that. Don't forget to plan adding or changing tests.\
                          Outline the `change plan` - list of files that should be changed and how they should be changed.".to_string(),
-                    toolset: ToolsetType::Read,
+                    toolset: ToolsetType::Discover,
                     max_tools_calls: 2,
                     next_step: Some(Box::new(BTStepNode{
                         prompt: "Collect the necessary information to build the patch request for the files from the `change plan`. You have maximum of 8 tool/function calls available.".to_string(),
-                        toolset: ToolsetType::Read,
+                        toolset: ToolsetType::Discover,
                         max_tools_calls: 8,
                         next_step: Some(Box::new(BTStepNode {
                             prompt: "Implement the patch according to the `change plan`: follow project style, and update related code paths as needed.".to_string(),

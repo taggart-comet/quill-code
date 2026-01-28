@@ -1,28 +1,40 @@
+use crate::domain::AgentModeType;
 use crate::domain::bt::BTStepNodeInterface;
 use crate::domain::session::Request;
 use crate::domain::ModelType;
-use crate::domain::prompting::get_user_prompt;
+use crate::domain::prompting::user::get_user_prompt;
 
 /// LLM prompt templates for the coding assistant
 ///
 /// This module contains all prompt templates used for LLM interactions.
 
-pub fn get_bt_tree_step_prompt(model_type: ModelType, step: &dyn BTStepNodeInterface, request: &dyn Request) -> String {
+pub fn get_bt_tree_step_prompt(
+    model_type: ModelType,
+    step: &dyn BTStepNodeInterface,
+    request: &dyn Request,
+) -> String {
     if model_type == ModelType::OpenAI {
         format!(
             "Objective:\n{}\n\
             Current action:\n{}\n.",
-            request.current_request(), step.prompt()
+            request.current_request(),
+            step.prompt()
         )
     } else {
         format!(
-            "{}\n{}", get_user_prompt(model_type, request), step.prompt()
+            "{}\n{}",
+            get_user_prompt(model_type, request),
+            step.prompt()
         )
     }
 }
 
-pub fn get_system_prompt(model_type: ModelType) -> String {
+pub fn get_system_prompt(model_type: ModelType, agent_mode: AgentModeType) -> String {
     let (os_name, shell_name) = get_runtime_environment();
+
+    if agent_mode == AgentModeType::Plan {
+        return _system_prompt_for_plan(model_type);
+    }
     if model_type == ModelType::OpenAI {
         format!(
             "You are Drastis, a coding agent. \n\
@@ -37,6 +49,38 @@ pub fn get_system_prompt(model_type: ModelType) -> String {
             os_name, shell_name
         )
     }
+}
+
+fn _system_prompt_for_plan(model_type: ModelType) -> String {
+    let (os_name, shell_name) = get_runtime_environment();
+    if model_type == ModelType::OpenAI {
+        format!(
+            "You are Drastis, a coding agent. \n\
+You're in the Plan Mode! Use tools to gather all required information to make a detailed plan of what user wants to achieve. \n\
+Ask the user, if there any ambiguities, and clarify what needs to be done if the instructions are not clear. \n\
+When you gathered the information, use the `update_todo_list` tool to create the TODO list and ask the user if he would like to make any changes to the TODO list or is he ready to implement the plan. \n\
+You're writing plan for yourself, so make it prompt-like, you will be executing this plan, once the user confirms it. \n\
+When using tools, pass JSON arguments that match their parameters. \n\
+Runtime: os={}, shell={}.",
+            os_name, shell_name
+        )
+    } else {
+        format!(
+            "You are Drastis, a coding agent. \n\
+You're in the Plan Mode! Use tools to gather all required information to make a detailed plan of what user wants to achieve. \n\
+Ask the user, if there any ambiguities, and clarify what needs to be done if the instructions are not clear. \n\
+When you gathered the information, use the `update_todo_list` tool to create the TODO list and ask the user if he would like to make any changes to the TODO list or is he ready to implement the plan. \n\
+Runtime: os={}, shell={}.",
+            os_name, shell_name
+        )
+    }
+}
+
+pub fn format_todo_list_message(todo_content: &str) -> String {
+    format!(
+        "## Current Session TODO List\n\nBelow is the current plan/TODO list for this session:\n\n```json\n{}\n```\n\nMake sure to update the TODO list as you make progress.",
+        todo_content
+    )
 }
 
 fn get_runtime_environment() -> (String, String) {

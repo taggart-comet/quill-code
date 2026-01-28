@@ -68,10 +68,19 @@ impl OpenAIClient {
         user_prompt: &str,
         tools: &[&dyn crate::domain::tools::Tool],
         chain: &crate::domain::workflow::Chain,
+        images: &[String],
+        mut tracer: Option<&mut openai_agents_tracing::TracingFacade>,
     ) -> Result<LLMInferenceResult, Box<dyn Error + Send + Sync>> {
         let max_attempts = 3;
         for attempt in 1..=max_attempts {
-            match self.call_responses_api_inner(system_prompt, user_prompt, tools, chain) {
+            match self.call_responses_api_inner(
+                system_prompt,
+                user_prompt,
+                tools,
+                chain,
+                images,
+                tracer.as_deref_mut(),
+            ) {
                 Ok(result) => return Ok(result),
                 Err(e) => {
                     let error_str = e.to_string();
@@ -116,10 +125,20 @@ impl OpenAIClient {
         user_prompt: &str,
         tools: &[&dyn crate::domain::tools::Tool],
         chain: &crate::domain::workflow::Chain,
+        images: &[String],
+        tracer: Option<&mut openai_agents_tracing::TracingFacade>,
     ) -> Result<LLMInferenceResult, Box<dyn Error + Send + Sync>> {
         let url = "https://api.openai.com/v1/responses";
 
-        let request_body = build_request_dto(&self.model, system_prompt, user_prompt, tools, chain);
+        let request_body = build_request_dto(
+            &self.model,
+            system_prompt,
+            user_prompt,
+            images,
+            tools,
+            chain,
+            tracer,
+        );
 
         let response = self
             .client
@@ -140,8 +159,8 @@ impl OpenAIClient {
             Err(e) => return Err(Box::new(OpenAIClientError::Deserialize { source: e, body })),
         };
 
-        let result = build_llm_result(dto);
-        if result.summary.is_empty() && result.chosen_tool.is_none() {
+        let result = build_llm_result(dto, tools);
+        if result.summary.is_empty() && result.tool_call.is_none() {
             return Err(Box::new(OpenAIClientError::NoText { body }));
         }
         Ok(result)

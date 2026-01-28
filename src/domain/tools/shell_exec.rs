@@ -295,6 +295,10 @@ mod tests {
             &self.current_request
         }
 
+        fn mode(&self) -> crate::domain::AgentModeType {
+            crate::domain::AgentModeType::Build
+        }
+
         fn project_root(&self) -> &Path {
             &self.root
         }
@@ -309,6 +313,22 @@ mod tests {
 
         fn set_final_message(&mut self, message: String) {
             self.final_message = Some(message);
+        }
+
+        fn images(&self) -> &[String] {
+            &[]
+        }
+
+        fn session_id(&self) -> Option<i64> {
+            None
+        }
+
+        fn get_history_steps(&self) -> Vec<crate::domain::workflow::step::ChainStep> {
+            Vec::new()
+        }
+
+        fn get_session_plan(&self) -> Option<crate::domain::todo::TodoList> {
+            None
         }
     }
 

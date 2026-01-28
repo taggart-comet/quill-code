@@ -1,5 +1,7 @@
 use super::{request::Request, session_request::SessionRequest};
+use crate::domain::AgentModeType;
 use crate::domain::{Project, UserSettings};
+use crate::infrastructure::db::DbPool;
 use crate::repository::SessionRow;
 use std::path::Path;
 
@@ -16,6 +18,9 @@ pub struct Session {
     current_request: String,
     current_user_settings: Option<UserSettings>,
     final_message: Option<String>,
+    current_images: Vec<String>,
+    current_mode: AgentModeType,
+    conn: Option<DbPool>,
 }
 
 impl Session {
@@ -36,12 +41,24 @@ impl Session {
         self.current_request = prompt;
     }
 
+    pub fn set_current_images(&mut self, images: Vec<String>) {
+        self.current_images = images;
+    }
+
+    pub fn set_current_mode(&mut self, mode: AgentModeType) {
+        self.current_mode = mode;
+    }
+
     pub fn set_current_user_settings(&mut self, settings: Option<UserSettings>) {
         self.current_user_settings = settings;
     }
 
     pub fn set_requests(&mut self, requests: Vec<SessionRequest>) {
         self.requests = requests;
+    }
+
+    pub fn set_conn(&mut self, conn: DbPool) {
+        self.conn = Some(conn);
     }
 
     pub fn load_with_requests(
@@ -66,6 +83,9 @@ impl Session {
             current_request: String::new(),
             current_user_settings: None,
             final_message: None,
+            current_images: Vec::new(),
+            current_mode: AgentModeType::Build,
+            conn: None,
         }
     }
 }
@@ -77,6 +97,10 @@ impl Request for Session {
 
     fn current_request(&self) -> &str {
         &self.current_request
+    }
+
+    fn mode(&self) -> AgentModeType {
+        self.current_mode
     }
 
     fn project_root(&self) -> &Path {
@@ -93,6 +117,80 @@ impl Request for Session {
 
     fn set_final_message(&mut self, message: String) {
         self.final_message = Some(message);
+    }
+
+    fn images(&self) -> &[String] {
+        &self.current_images
+    }
+
+    fn session_id(&self) -> Option<i64> {
+        Some(self.id)
+    }
+
+    fn get_history_steps(&self) -> Vec<crate::domain::workflow::step::ChainStep> {
+        use crate::repository::SessionRequestStepsRepository;
+
+        // Return empty if no connection available
+        let conn = match &self.conn {
+            Some(c) => c.clone(),
+            None => {
+                log::warn!("No database connection available for loading history steps");
+                return Vec::new();
+            }
+        };
+
+        let steps_repo = SessionRequestStepsRepository::new(conn);
+
+        // Load all steps from all requests in this session
+        match steps_repo.load_steps_for_session(self.id) {
+            Ok(steps) => steps,
+            Err(e) => {
+                log::warn!("Failed to load history steps for session {}: {}", self.id, e);
+                Vec::new()
+            }
+        }
+    }
+
+    fn get_session_plan(&self) -> Option<crate::domain::todo::TodoList> {
+        use crate::repository::TodoListRepository;
+
+        // Return None if no connection available
+        let conn = match &self.conn {
+            Some(c) => c.clone(),
+            None => {
+                log::warn!("No database connection available for loading TODO list");
+                return None;
+            }
+        };
+
+        let conn_guard = match conn.get() {
+            Ok(guard) => guard,
+            Err(e) => {
+                log::warn!("Failed to get database connection: {}", e);
+                return None;
+            }
+        };
+
+        let repo = TodoListRepository::new(&*conn_guard);
+
+        // Get TODO list for this session
+        match repo.get_by_session(self.id) {
+            Ok(Some(row)) => {
+                // Parse the JSON content into TodoList
+                match serde_json::from_str::<crate::domain::todo::TodoList>(&row.content) {
+                    Ok(todo_list) => Some(todo_list),
+                    Err(e) => {
+                        log::warn!("Failed to parse TODO list JSON: {}", e);
+                        None
+                    }
+                }
+            }
+            Ok(None) => None,
+            Err(e) => {
+                log::warn!("Failed to load TODO list for session {}: {}", self.id, e);
+                None
+            }
+        }
     }
 }
 

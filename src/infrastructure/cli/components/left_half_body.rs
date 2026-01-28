@@ -18,13 +18,40 @@ pub fn render(frame: &mut Frame, area: Rect, state: &UiState, theme: Theme) {
             ProgressKind::Success => Style::default().fg(theme.success),
             ProgressKind::Error => Style::default().fg(theme.error),
             ProgressKind::Cancelled => Style::default().fg(theme.active),
+            ProgressKind::UserMessage => Style::default()
+                .fg(theme.active)
+                .add_modifier(Modifier::BOLD),
+            ProgressKind::UserMessageSuccess => Style::default()
+                .fg(theme.success)
+                .add_modifier(Modifier::BOLD),
+            ProgressKind::UserMessageError => Style::default()
+                .fg(theme.error)
+                .add_modifier(Modifier::BOLD),
+            ProgressKind::UserMessageCancelled => Style::default()
+                .fg(theme.active)
+                .add_modifier(Modifier::BOLD),
         };
         let style = if entry.active {
             style.fg(theme.active).add_modifier(Modifier::BOLD)
         } else {
             style
         };
-        lines.extend(markdown_lines(&entry.text, style, theme));
+
+        // Add special formatting for user messages
+        if matches!(
+            entry.kind,
+            ProgressKind::UserMessage
+                | ProgressKind::UserMessageSuccess
+                | ProgressKind::UserMessageError
+                | ProgressKind::UserMessageCancelled
+        ) {
+            lines.extend(format_user_message(&entry.text, style, theme, entry.kind));
+        } else {
+            lines.extend(markdown_lines(&entry.text, style, theme));
+        }
+    }
+    if state.main_body_follow {
+        lines.push(Line::from(Span::raw("")));
     }
 
     let scroll_offset = state.main_body_scroll;
@@ -107,4 +134,36 @@ fn push_line(lines: &mut Vec<Line<'static>>, spans: &mut Vec<Span<'static>>) {
         return;
     }
     lines.push(Line::from(spans.drain(..).collect::<Vec<_>>()));
+}
+
+fn format_user_message(
+    text: &str,
+    style: Style,
+    theme: Theme,
+    kind: ProgressKind,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Choose border color based on request status
+    let border_color = match kind {
+        ProgressKind::UserMessageSuccess => theme.success,
+        ProgressKind::UserMessageError => theme.error,
+        ProgressKind::UserMessageCancelled => theme.active,
+        _ => ratatui::style::Color::Yellow, // Default for UserMessage (in-progress)
+    };
+    let border_style = Style::default().fg(border_color);
+    let border = "▌ "; // Block character for left border
+
+    // Process each line of the user's message with a colored left border
+    for line in text.lines() {
+        lines.push(Line::from(vec![
+            Span::styled(border, border_style),
+            Span::styled(line.to_string(), style),
+        ]));
+    }
+
+    // Add an empty line after the user message for spacing
+    lines.push(Line::from(Span::raw("")));
+
+    lines
 }

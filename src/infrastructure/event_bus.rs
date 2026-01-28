@@ -1,6 +1,8 @@
 use crate::domain::permissions::PermissionDecision;
 use crate::domain::tools::FileChange;
+use crate::domain::AgentModeType;
 use crossbeam_channel::{unbounded, Receiver, Sender};
+use crate::domain::todo::TodoItem;
 
 #[derive(Debug, Clone)]
 pub enum StepPhase {
@@ -34,9 +36,16 @@ pub struct OpenAiModelInfo {
 }
 
 #[derive(Debug, Clone)]
+pub struct ImageAttachment {
+    pub data_url: String, // "data:image/png;base64,..."
+}
+
+#[derive(Debug, Clone)]
 pub enum UiToAgentEvent {
     RequestEvent {
         prompt: String,
+        images: Vec<ImageAttachment>,
+        mode: AgentModeType, // NEW: Pass mode to agent
     },
     PermissionUpdateEvent {
         request_id: u64,
@@ -61,6 +70,7 @@ pub enum AgentToUiEvent {
     RequestStartedEvent {
         request_id: u64,
         label: String,
+        prompt: String,
     },
     ProgressEvent {
         step_name: String,
@@ -85,6 +95,9 @@ pub enum AgentToUiEvent {
         request_id: i64,
         changes: Vec<FileChange>,
     },
+    TodoListUpdateEvent {
+        items: Vec<TodoItem>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -93,7 +106,7 @@ pub struct PermissionUpdate {
     pub decision: PermissionDecision,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct EventBus {
     pub ui_to_agent_tx: Sender<UiToAgentEvent>,
     pub ui_to_agent_rx: Receiver<UiToAgentEvent>,

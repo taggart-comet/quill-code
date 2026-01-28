@@ -1,7 +1,7 @@
 use super::types::{Permission, PermissionDecision, PermissionScope};
-use rusqlite::{params, Connection};
+use crate::infrastructure::db::DbPool;
+use rusqlite::params;
 use std::path::PathBuf;
-use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -32,11 +32,11 @@ pub trait PermissionStore {
 }
 
 pub struct SqlitePermissionStore {
-    conn: Arc<Connection>,
+    conn: DbPool,
 }
 
 impl SqlitePermissionStore {
-    pub fn new(conn: Arc<Connection>) -> Self {
+    pub fn new(conn: DbPool) -> Self {
         Self { conn }
     }
 
@@ -91,7 +91,16 @@ impl PermissionStore for SqlitePermissionStore {
             PermissionScope::Global => "global",
         };
 
-        self.conn.execute(
+        let conn = self.conn.get().map_err(|e| {
+            StoreError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to get connection: {}", e),
+                ),
+            )))
+        })?;
+
+        conn.execute(
             "INSERT INTO permissions (
                 tool_name, command_pattern, resource_pattern, decision, scope,
                 project_id, created_at
@@ -107,7 +116,7 @@ impl PermissionStore for SqlitePermissionStore {
             ],
         )?;
 
-        let id = self.conn.last_insert_rowid() as i32;
+        let id = conn.last_insert_rowid() as i32;
         let mut created = permission;
         created.id = Some(id);
         Ok(created)
@@ -120,19 +129,28 @@ impl PermissionStore for SqlitePermissionStore {
     ) -> Result<Option<Permission>, StoreError> {
         let query = if project_id.is_some() {
             "SELECT id, tool_name, command_pattern, resource_pattern, decision, scope,
-                    project_id, created_at 
-             FROM permissions 
+                    project_id, created_at
+             FROM permissions
              WHERE tool_name = ?1 AND (project_id = ?2 OR project_id IS NULL OR scope = 'global')
              ORDER BY scope DESC, project_id DESC LIMIT 1"
         } else {
             "SELECT id, tool_name, command_pattern, resource_pattern, decision, scope,
-                    project_id, created_at 
-             FROM permissions 
+                    project_id, created_at
+             FROM permissions
              WHERE tool_name = ?1 AND (project_id IS NULL OR scope = 'global')
              ORDER BY scope DESC LIMIT 1"
         };
 
-        let mut stmt = self.conn.prepare(query)?;
+        let conn = self.conn.get().map_err(|e| {
+            StoreError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to get connection: {}", e),
+                ),
+            )))
+        })?;
+
+        let mut stmt = conn.prepare(query)?;
         if let Some(pid) = project_id {
             let mut rows = stmt.query_map(params![tool, pid], |row| self.row_to_permission(row))?;
             return match rows.next() {
@@ -158,21 +176,30 @@ impl PermissionStore for SqlitePermissionStore {
     ) -> Result<Option<Permission>, StoreError> {
         let query = if project_id.is_some() {
             "SELECT id, tool_name, command_pattern, resource_pattern, decision, scope,
-                    project_id, created_at 
-             FROM permissions 
-             WHERE tool_name = ?1 AND command_pattern IS NOT NULL 
+                    project_id, created_at
+             FROM permissions
+             WHERE tool_name = ?1 AND command_pattern IS NOT NULL
              AND (project_id = ?2 OR project_id IS NULL OR scope = 'global')
              ORDER BY scope DESC, project_id DESC"
         } else {
             "SELECT id, tool_name, command_pattern, resource_pattern, decision, scope,
-                    project_id, created_at 
-             FROM permissions 
-             WHERE tool_name = ?1 AND command_pattern IS NOT NULL 
+                    project_id, created_at
+             FROM permissions
+             WHERE tool_name = ?1 AND command_pattern IS NOT NULL
              AND (project_id IS NULL OR scope = 'global')
              ORDER BY scope DESC"
         };
 
-        let mut stmt = self.conn.prepare(query)?;
+        let conn = self.conn.get().map_err(|e| {
+            StoreError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to get connection: {}", e),
+                ),
+            )))
+        })?;
+
+        let mut stmt = conn.prepare(query)?;
         if let Some(pid) = project_id {
             let rows = stmt.query_map(params![tool, pid], |row| self.row_to_permission(row))?;
             return self.find_matching_command_permission(rows, tool, command);
@@ -190,21 +217,30 @@ impl PermissionStore for SqlitePermissionStore {
     ) -> Result<Option<Permission>, StoreError> {
         let query = if project_id.is_some() {
             "SELECT id, tool_name, command_pattern, resource_pattern, decision, scope,
-                    project_id, created_at 
-             FROM permissions 
+                    project_id, created_at
+             FROM permissions
               WHERE tool_name = ?1 AND resource_pattern IS NOT NULL
              AND (project_id = ?2 OR project_id IS NULL OR scope = 'global')
              ORDER BY scope DESC, project_id DESC"
         } else {
             "SELECT id, tool_name, command_pattern, resource_pattern, decision, scope,
-                    project_id, created_at 
-             FROM permissions 
+                    project_id, created_at
+             FROM permissions
               WHERE tool_name = ?1 AND resource_pattern IS NOT NULL
              AND (project_id IS NULL OR scope = 'global')
              ORDER BY scope DESC"
         };
 
-        let mut stmt = self.conn.prepare(query)?;
+        let conn = self.conn.get().map_err(|e| {
+            StoreError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to get connection: {}", e),
+                ),
+            )))
+        })?;
+
+        let mut stmt = conn.prepare(query)?;
         if let Some(pid) = project_id {
             let rows = stmt.query_map(params![tool, pid], |row| self.row_to_permission(row))?;
             return self.find_matching_path_permission(rows, tool, path);

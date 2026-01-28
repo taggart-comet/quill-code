@@ -1,11 +1,14 @@
-use crate::infrastructure::app_bus::{EventBus, UiToAgentEvent};
 use crate::infrastructure::cli::repl::refresh_settings_from_db;
 use crate::infrastructure::cli::state::{LoadStatus, PopupInput, PopupState, UiMode, UiState};
+use crate::infrastructure::db::DbPool;
+use crate::infrastructure::event_bus::{EventBus, UiToAgentEvent};
 use crate::repository::UserSettingsRepository;
-use rusqlite::Connection;
 
-pub fn api_key_missing(conn: &Connection) -> Result<bool, String> {
-    let settings_repo = UserSettingsRepository::new(conn);
+pub fn api_key_missing(conn: &DbPool) -> Result<bool, String> {
+    let conn_guard = conn
+        .get()
+        .map_err(|e| format!("Failed to get connection: {}", e))?;
+    let settings_repo = UserSettingsRepository::new(&*conn_guard);
     let settings = settings_repo.get_current().map_err(|e| e.to_string())?;
     Ok(settings
         .openai_api_key
@@ -20,7 +23,7 @@ pub fn begin_prompt(state: &mut UiState, enable_tracing: bool) {
 
 pub fn submit_key(
     bus: &EventBus,
-    conn: &Connection,
+    conn: &DbPool,
     state: &mut UiState,
     enable_tracing: bool,
 ) -> Result<(), String> {

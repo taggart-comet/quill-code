@@ -107,27 +107,36 @@ impl ReadObjects {
     fn parse_input_json(raw: &str) -> Result<ReadObjectsInput, Error> {
         let parsed: ReadObjectsInputJson =
             serde_json::from_str(raw).map_err(|e| Error::Parse(e.to_string()))?;
-        if parsed.path.is_empty() {
-            return Err(Error::Parse("path is required".into()));
+
+        let trimmed_path = parsed.path.trim();
+        if trimmed_path.is_empty() {
+            return Err(Error::Parse("path is required and cannot be empty".into()));
         }
 
-        let mut names = Self::parse_query(&parsed.query);
+        let trimmed_query = parsed.query.trim();
+        if trimmed_query.is_empty() {
+            return Err(Error::Parse(
+                "query is required and cannot be empty (expected: comma- or space-separated object names like \"main\" or \"Config, Parser\")".into()
+            ));
+        }
+
+        let mut names = Self::parse_query(trimmed_query);
         names.retain(|name| !name.trim().is_empty());
         if names.is_empty() {
-            return Err(Error::Parse("query is required".into()));
+            return Err(Error::Parse(format!(
+                "query must contain at least one valid object name (received: {:?})",
+                parsed.query
+            )));
         }
 
         let mut queries = Vec::new();
         for name in names {
-            if name.trim().is_empty() {
-                return Err(Error::Parse("names cannot include empty strings".into()));
-            }
             queries.push(ObjectQuery::new(&name));
         }
 
         Ok(ReadObjectsInput {
             raw: raw.to_string(),
-            full_path_to_file: parsed.path,
+            full_path_to_file: trimmed_path.to_string(),
             queries,
         })
     }
@@ -210,11 +219,13 @@ impl Tool for ReadObjects {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "path to the source file"
+                    "description": "path to the source file",
+                    "minLength": 1
                 },
                 "query": {
                     "type": "string",
-                    "description": "comma- or space-separated object names. Example: \"main, Config, Parser\""
+                    "description": "comma- or space-separated object names (e.g., \"main\", \"Config\", or \"main, Config, Parser\")",
+                    "minLength": 1
                 }
             },
             "required": ["path", "query"],
@@ -271,5 +282,203 @@ impl Tool for ReadObjects {
 impl Default for ReadObjects {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_input_valid() {
+        let tool = ReadObjects::new();
+        let input = r#"{"path": "src/main.rs", "query": "main, Config"}"#;
+        let result = tool.parse_input(input.to_string());
+        assert!(result.is_none(), "Expected no error, got: {:?}", result);
+
+        // Verify the parsed input
+        let parsed = tool.load_input().expect("Failed to load input");
+        assert_eq!(parsed.full_path_to_file, "src/main.rs");
+        assert_eq!(parsed.queries.len(), 2);
+        assert_eq!(parsed.queries[0].name, "main");
+        assert_eq!(parsed.queries[1].name, "Config");
+    }
+
+    #[test]
+    fn test_parse_input_empty_query() {
+        let tool = ReadObjects::new();
+        let input = r#"{"path": "src/main.rs", "query": ""}"#;
+        let result = tool.parse_input(input.to_string());
+        assert!(result.is_some(), "Expected error for empty query");
+
+        if let Some(Error::Parse(msg)) = result {
+            assert!(
+                msg.contains("query is required"),
+                "Expected error message about query being required, got: {}",
+                msg
+            );
+        } else {
+            panic!("Expected Parse error about query");
+        }
+    }
+
+    #[test]
+    fn test_parse_input_whitespace_query() {
+        let tool = ReadObjects::new();
+        let input = r#"{"path": "src/main.rs", "query": "   "}"#;
+        let result = tool.parse_input(input.to_string());
+        assert!(result.is_some(), "Expected error for whitespace query");
+
+        if let Some(Error::Parse(msg)) = result {
+            assert!(
+                msg.contains("query is required"),
+                "Expected error message about query being required, got: {}",
+                msg
+            );
+        } else {
+            panic!("Expected Parse error about query");
+        }
+    }
+
+    #[test]
+    fn test_parse_input_comma_only_query() {
+        let tool = ReadObjects::new();
+        let input = r#"{"path": "src/main.rs", "query": ",,,"}"#;
+        let result = tool.parse_input(input.to_string());
+        assert!(result.is_some(), "Expected error for comma-only query");
+
+        if let Some(Error::Parse(msg)) = result {
+            assert!(
+                msg.contains("query must contain at least one valid object name"),
+                "Expected error about no valid object names, got: {}",
+                msg
+            );
+        } else {
+            panic!("Expected Parse error about query");
+        }
+    }
+
+    #[test]
+    fn test_parse_input_missing_path() {
+        let tool = ReadObjects::new();
+        let input = r#"{"path": "", "query": "main"}"#;
+        let result = tool.parse_input(input.to_string());
+        assert!(result.is_some(), "Expected error for empty path");
+
+        if let Some(Error::Parse(msg)) = result {
+            assert!(
+                msg.contains("path is required"),
+                "Expected error message about path being required, got: {}",
+                msg
+            );
+        } else {
+            panic!("Expected Parse error about path");
+        }
+    }
+
+    #[test]
+    fn test_parse_query_comma_separated() {
+        let result = ReadObjects::parse_query("main, Config, Parser");
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], "main");
+        assert_eq!(result[1], "Config");
+        assert_eq!(result[2], "Parser");
+    }
+
+    #[test]
+    fn test_parse_query_space_separated() {
+        let result = ReadObjects::parse_query("main Config Parser");
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], "main");
+        assert_eq!(result[1], "Config");
+        assert_eq!(result[2], "Parser");
+    }
+
+    #[test]
+    fn test_parse_query_mixed_separators() {
+        let result = ReadObjects::parse_query("main, Config Parser");
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], "main");
+        assert_eq!(result[1], "Config");
+        assert_eq!(result[2], "Parser");
+    }
+
+    #[test]
+    fn test_parse_input_malformed_json() {
+        let tool = ReadObjects::new();
+        let input = r#"{"path": "src/main.rs", "query": "main"#; // Missing closing brace
+        let result = tool.parse_input(input.to_string());
+        assert!(result.is_some(), "Expected error for malformed JSON");
+    }
+
+    #[test]
+    fn test_parse_input_path_with_whitespace() {
+        let tool = ReadObjects::new();
+        let input = r#"{"path": "  src/main.rs  ", "query": "main"}"#;
+        let result = tool.parse_input(input.to_string());
+        assert!(
+            result.is_none(),
+            "Expected no error for path with whitespace"
+        );
+
+        let parsed = tool.load_input().expect("Failed to load input");
+        assert_eq!(
+            parsed.full_path_to_file, "src/main.rs",
+            "Path should be trimmed"
+        );
+    }
+
+    #[test]
+    fn test_parse_input_query_with_extra_whitespace() {
+        let tool = ReadObjects::new();
+        let input = r#"{"path": "src/main.rs", "query": "  main  ,  Config  "}"#;
+        let result = tool.parse_input(input.to_string());
+        assert!(
+            result.is_none(),
+            "Expected no error for query with extra whitespace"
+        );
+
+        let parsed = tool.load_input().expect("Failed to load input");
+        assert_eq!(parsed.queries.len(), 2);
+        assert_eq!(parsed.queries[0].name, "main");
+        assert_eq!(parsed.queries[1].name, "Config");
+    }
+
+    #[test]
+    fn test_parse_input_single_object() {
+        let tool = ReadObjects::new();
+        let input = r#"{"path": "src/lib.rs", "query": "MyStruct"}"#;
+        let result = tool.parse_input(input.to_string());
+        assert!(
+            result.is_none(),
+            "Expected no error for single object query"
+        );
+
+        let parsed = tool.load_input().expect("Failed to load input");
+        assert_eq!(parsed.queries.len(), 1);
+        assert_eq!(parsed.queries[0].name, "MyStruct");
+    }
+
+    #[test]
+    fn test_object_query_matches() {
+        let query = ObjectQuery::new("Config");
+
+        let obj = ParsedObject {
+            name: "Config".to_string(),
+            kind: ObjectKind::Struct,
+            line_start: 10,
+            line_end: 20,
+            visibility: Some("pub".to_string()),
+        };
+        assert!(query.matches(&obj), "Should match exact name");
+
+        let obj_partial = ParsedObject {
+            name: "MyConfig".to_string(),
+            kind: ObjectKind::Struct,
+            line_start: 10,
+            line_end: 20,
+            visibility: None,
+        };
+        assert!(query.matches(&obj_partial), "Should match partial name");
     }
 }

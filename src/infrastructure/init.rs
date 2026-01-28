@@ -1,8 +1,9 @@
 use crate::domain::ModelType;
 use crate::infrastructure::db;
+use crate::infrastructure::db::DbPool;
+use crate::infrastructure::event_bus::{LocalModelInfo, ModelSelection};
 use crate::infrastructure::inference::openai::OpenAIEngine;
 use crate::infrastructure::inference::{local::LocalEngine, InferenceEngine};
-use crate::infrastructure::app_bus::{LocalModelInfo, ModelSelection};
 use crate::infrastructure::model_registry;
 use crate::repository::{MetaRepository, ModelsRepository, UserSettingsRepository};
 use rusqlite::Connection;
@@ -60,7 +61,7 @@ impl Default for InfrastructureConfig {
 
 /// Result of infrastructure initialization
 pub struct InfrastructureComponents {
-    pub connection: Arc<Connection>,
+    pub connection: DbPool,
     pub engine: Option<Arc<dyn InferenceEngine>>,
     pub app_name: String,
 }
@@ -91,18 +92,25 @@ impl InfrastructureInitializer {
     pub fn initialize(&self) -> Result<InfrastructureComponents, InitError> {
         // 1. Initialize database
         log::info!("Initializing database...");
-        let connection = db::init_db(&self.config.app_name)
-            .map_err(|e| InitError::Database(e))?;
+        let connection = db::init_db(&self.config.app_name).map_err(|e| InitError::Database(e))?;
 
         // 2. Check if model is already selected
-        let meta_repo = MetaRepository::new(&connection);
-        let last_used_model_id = meta_repo
-            .get_last_used_model_id()
-            .map_err(|e| InitError::Repository(e))?;
+        let last_used_model_id = {
+            let conn = connection
+                .get()
+                .map_err(|e| InitError::Database(format!("Failed to get connection: {}", e)))?;
+            let meta_repo = MetaRepository::new(&*conn);
+            meta_repo
+                .get_last_used_model_id()
+                .map_err(|e| InitError::Repository(e))?
+        };
 
         let engine = if let Some(model_id) = last_used_model_id {
-            let engine = self.load_existing_model(&connection, model_id)?;
-            let settings_repo = UserSettingsRepository::new(&connection);
+            let conn = connection
+                .get()
+                .map_err(|e| InitError::Database(format!("Failed to get connection: {}", e)))?;
+            let engine = self.load_existing_model(&*conn, model_id)?;
+            let settings_repo = UserSettingsRepository::new(&*conn);
             let _ = settings_repo.update_current_model_id(Some(model_id));
             Some(engine)
         } else {
@@ -143,9 +151,7 @@ impl InfrastructureInitializer {
             }
             ModelType::OpenAI => {
                 let settings_repo = UserSettingsRepository::new(conn);
-                let settings = settings_repo
-                    .get_current()
-                    .map_err(InitError::Repository)?;
+                let settings = settings_repo.get_current().map_err(InitError::Repository)?;
                 let api_key = settings.openai_api_key.ok_or(InitError::MissingApiKey)?;
                 // Use saved model_name, fallback to gpt-4 for backward compatibility
                 let model_name = model.model_name.as_deref().unwrap_or("gpt-4");
@@ -154,7 +160,6 @@ impl InfrastructureInitializer {
             }
         }
     }
-
 }
 
 impl Default for InfrastructureInitializer {
@@ -183,9 +188,12 @@ impl From<InitError> for String {
 }
 
 /// Get the current model name from the database
-pub fn get_current_model_name(conn: &Connection) -> Result<String, String> {
-    let models_repo = ModelsRepository::new(conn);
-    let settings_repo = UserSettingsRepository::new(conn);
+pub fn get_current_model_info(conn: &DbPool) -> Result<(String, ModelType), String> {
+    let conn_guard = conn
+        .get()
+        .map_err(|e| format!("Failed to get connection: {}", e))?;
+    let models_repo = ModelsRepository::new(&*conn_guard);
+    let settings_repo = UserSettingsRepository::new(&*conn_guard);
 
     let settings = settings_repo.get_current().map_err(|e| e.to_string())?;
     let model_id = settings
@@ -197,10 +205,12 @@ pub fn get_current_model_name(conn: &Connection) -> Result<String, String> {
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Model not found".to_string())?;
 
+    let model_type = model.model_type;
+
     // For OpenAI models, return the model_name if available
     // For local models, return the filename
-    match model.model_type {
-        ModelType::OpenAI => Ok(model.model_name.unwrap_or_else(|| "gpt-4".to_string())),
+    let name = match model_type {
+        ModelType::OpenAI => model.model_name.unwrap_or_else(|| "gpt-4".to_string()),
         ModelType::Local => model
             .gguf_file_path
             .map(|p| {
@@ -209,8 +219,10 @@ pub fn get_current_model_name(conn: &Connection) -> Result<String, String> {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| p)
             })
-            .ok_or_else(|| "Unknown local model".to_string()),
-    }
+            .unwrap_or_else(|| "Unknown local model".to_string()),
+    };
+
+    Ok((name, model_type))
 }
 
 pub fn list_local_models() -> Result<Vec<LocalModelInfo>, InitError> {
@@ -236,20 +248,26 @@ pub fn list_local_models() -> Result<Vec<LocalModelInfo>, InitError> {
     Ok(models)
 }
 
-pub fn update_openai_api_key(conn: &Connection, api_key: &str) -> Result<(), InitError> {
-    let settings_repo = UserSettingsRepository::new(conn);
+pub fn update_openai_api_key(conn: &DbPool, api_key: &str) -> Result<(), InitError> {
+    let conn_guard = conn
+        .get()
+        .map_err(|e| InitError::Database(format!("Failed to get connection: {}", e)))?;
+    let settings_repo = UserSettingsRepository::new(&*conn_guard);
     settings_repo
         .update_openai_api_key(Some(api_key))
         .map_err(InitError::Repository)
 }
 
 pub fn apply_model_selection(
-    conn: &Connection,
+    conn: &DbPool,
     selection: ModelSelection,
 ) -> Result<Arc<dyn InferenceEngine>, InitError> {
-    let models_repo = ModelsRepository::new(conn);
-    let meta_repo = MetaRepository::new(conn);
-    let settings_repo = UserSettingsRepository::new(conn);
+    let conn_guard = conn
+        .get()
+        .map_err(|e| InitError::Database(format!("Failed to get connection: {}", e)))?;
+    let models_repo = ModelsRepository::new(&*conn_guard);
+    let meta_repo = MetaRepository::new(&*conn_guard);
+    let settings_repo = UserSettingsRepository::new(&*conn_guard);
 
     match selection {
         ModelSelection::LocalPath(path) => {
@@ -257,9 +275,7 @@ pub fn apply_model_selection(
             if !path_buf.exists() {
                 return Err(InitError::ModelFileNotFound(path));
             }
-            let canonical_path = path_buf
-                .canonicalize()
-                .unwrap_or_else(|_| path_buf.clone());
+            let canonical_path = path_buf.canonicalize().unwrap_or_else(|_| path_buf.clone());
             let gguf_path = canonical_path.to_string_lossy().to_string();
 
             let existing_models = models_repo
@@ -289,8 +305,8 @@ pub fn apply_model_selection(
                 }
             };
 
-            let engine = LocalEngine::load_with_path(&canonical_path)
-                .map_err(InitError::ModelLoadError)?;
+            let engine =
+                LocalEngine::load_with_path(&canonical_path).map_err(InitError::ModelLoadError)?;
 
             meta_repo
                 .set_last_used_model_id(model_id)
@@ -307,9 +323,7 @@ pub fn apply_model_selection(
                 .find_by_type(ModelType::OpenAI)
                 .map_err(InitError::Repository)?;
 
-            let settings = settings_repo
-                .get_current()
-                .map_err(InitError::Repository)?;
+            let settings = settings_repo.get_current().map_err(InitError::Repository)?;
             let resolved_api_key = settings.openai_api_key.ok_or(InitError::MissingApiKey)?;
 
             let mut model_id = None;
@@ -321,7 +335,9 @@ pub fn apply_model_selection(
             }
 
             if model_id.is_none() {
-                if let Some(existing) = existing_models.iter().find(|model| model.model_name.is_none())
+                if let Some(existing) = existing_models
+                    .iter()
+                    .find(|model| model.model_name.is_none())
                 {
                     models_repo
                         .update_model_name(existing.id, Some(&model_name))
@@ -332,15 +348,12 @@ pub fn apply_model_selection(
 
             let model_id = match model_id {
                 Some(id) => id,
-                None => models_repo
-                    .create(
-                        ModelType::OpenAI,
-                        None,
-                        None,
-                        Some(&model_name),
-                    )
-                    .map_err(InitError::Repository)?
-                    .id,
+                None => {
+                    models_repo
+                        .create(ModelType::OpenAI, None, None, Some(&model_name))
+                        .map_err(InitError::Repository)?
+                        .id
+                }
             };
 
             let engine = OpenAIEngine::new(&resolved_api_key, &model_name)

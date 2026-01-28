@@ -3,27 +3,32 @@ use crate::domain::permissions::store::SqlitePermissionStore;
 use crate::domain::permissions::{PermissionChecker, PermissionConfig, PermissionPrompter};
 use crate::domain::workflow::{CancellationToken, Chain, Error as WorkflowError, Workflow};
 use crate::domain::UserSettings;
-use crate::infrastructure::{EventBus, InferenceEngine};
-use crate::repository::{ModelsRepository, SessionRequestsRepository, UserSettingsRepository};
-use rusqlite::Connection;
+use crate::infrastructure::db::DbPool;
+use crate::infrastructure::AgentToUiEvent;
+use crate::infrastructure::InferenceEngine;
+use crate::repository::{
+    ModelsRepository, SessionRequestStepsRepository, SessionRequestsRepository,
+    UserSettingsRepository,
+};
+use crossbeam_channel::Sender;
 use std::sync::Arc;
 
 /// Service for running workflows on sessions
 pub struct SessionService {
     workflow: Workflow,
     use_behavior_trees: bool,
-    conn: Arc<Connection>,
-    event_bus: Arc<EventBus>,
+    conn: DbPool,
+    event_sender: Sender<AgentToUiEvent>,
 }
 
 impl SessionService {
-    pub fn new_with_permissions_and_prompter(
+    pub fn new(
         engine: Arc<dyn InferenceEngine>,
-        conn: Arc<Connection>,
+        conn: DbPool,
         use_behavior_trees: bool,
         permission_config: PermissionConfig,
         prompter: Arc<dyn PermissionPrompter>,
-        event_bus: Arc<EventBus>,
+        event_sender: Sender<AgentToUiEvent>,
     ) -> Result<Self, String> {
         let permission_store = Arc::new(SqlitePermissionStore::new(conn.clone()));
         let permission_checker = Arc::new(PermissionChecker::new_with_prompter(
@@ -35,7 +40,8 @@ impl SessionService {
         let workflow = Workflow::new(
             engine,
             permission_checker,
-            Some(event_bus.agent_to_ui_tx.clone()),
+            event_sender.clone(),
+            conn.clone(),
         )
         .map_err(|err| format!("Failed to create workflow: {}", err))?;
 
@@ -43,7 +49,7 @@ impl SessionService {
             workflow,
             use_behavior_trees,
             conn,
-            event_bus,
+            event_sender,
         })
     }
 
@@ -55,24 +61,35 @@ impl SessionService {
         &mut self,
         session: &Session,
         prompt: &str,
+        images: &[String],
+        mode: crate::domain::AgentModeType, // NEW: Agent mode
         cancel: &CancellationToken,
     ) -> Result<Chain, ServiceError> {
-        let settings_repo = UserSettingsRepository::new(&self.conn);
-        let settings_row = settings_repo
-            .get_current()
-            .map_err(|e| ServiceError::Repository(e))?;
-        let model_name = settings_row
-            .current_model_id
-            .and_then(|id| ModelsRepository::new(&self.conn).find_by_id(id).ok())
-            .flatten()
-            .and_then(|model| model.model_name);
+        // Get user settings and model name
+        let (settings_row, model_name) = {
+            let conn = self.conn.get().map_err(|e| {
+                ServiceError::Repository(format!("Failed to get database connection: {}", e))
+            })?;
+
+            let settings_repo = UserSettingsRepository::new(&*conn);
+            let settings_row = settings_repo
+                .get_current()
+                .map_err(|e| ServiceError::Repository(e))?;
+            let model_name = settings_row
+                .current_model_id
+                .and_then(|id| ModelsRepository::new(&*conn).find_by_id(id).ok())
+                .flatten()
+                .and_then(|model| model.model_name);
+            (settings_row, model_name)
+        }; // conn lock is dropped here
+
         let request_settings =
             UserSettings::from(settings_row.clone()).with_current_model_name(model_name);
 
         // Create a new session request
         let requests_repo = SessionRequestsRepository::new(self.conn.clone());
         let request_row = requests_repo
-            .create(session.id(), settings_row.id, prompt)
+            .create(session.id(), settings_row.id, prompt, mode)
             .map_err(|e| ServiceError::Repository(e))?;
         let request_id = request_row.id;
 
@@ -82,7 +99,10 @@ impl SessionService {
         // For now, we'll create a temporary session with the current request set
         let mut session_with_request = session.clone();
         session_with_request.set_current_request(prompt.to_string());
+        session_with_request.set_current_images(images.to_vec());
         session_with_request.set_current_user_settings(Some(request_settings));
+        session_with_request.set_current_mode(mode);
+        session_with_request.set_conn(self.conn.clone());
 
         // Run the workflow
         let result: Result<Chain, WorkflowError> = if self.use_behavior_trees {
@@ -90,7 +110,7 @@ impl SessionService {
                 .run_using_bt(&mut session_with_request, cancel)
         } else {
             self.workflow
-                .run(&mut session_with_request, cancel, 128, None)
+                .run(&mut session_with_request, cancel, 128, mode)
                 .map_err(ServiceError::Workflow)?;
             Ok(self.workflow.get_chain().clone())
         };
@@ -129,13 +149,20 @@ impl SessionService {
                         .map_err(|e| ServiceError::Repository(e))?;
 
                     // Emit FileChangesEvent
-                    let _ = self.event_bus.agent_to_ui_tx.send(
-                        crate::infrastructure::AgentToUiEvent::FileChangesEvent {
-                            request_id,
-                            changes: file_changes,
-                        },
-                    );
+                    let _ = self.event_sender.send(AgentToUiEvent::FileChangesEvent {
+                        request_id,
+                        changes: file_changes,
+                    });
                 }
+
+                // Save chain steps to database for future requests
+                let steps_repo = SessionRequestStepsRepository::new(self.conn.clone());
+                steps_repo
+                    .save_steps_for_request(request_id, chain.get_steps())
+                    .map_err(|e| {
+                        log::error!("Failed to save steps for request {}: {}", request_id, e);
+                        ServiceError::Repository(format!("Failed to save steps: {}", e))
+                    })?;
 
                 Ok(chain)
             }

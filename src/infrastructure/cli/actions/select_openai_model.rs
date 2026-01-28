@@ -1,20 +1,20 @@
-use crate::infrastructure::app_bus::{EventBus, ModelSelection, UiToAgentEvent};
 use crate::infrastructure::cli::actions::insert_openai_key;
 use crate::infrastructure::cli::repl::{
     refresh_models_from_db, refresh_settings_from_db, update_model_selection_in_db,
 };
 use crate::infrastructure::cli::state::{LoadStatus, PopupState, UiMode, UiState};
 use crate::infrastructure::cli::views::main_view::ModelEntry;
-use rusqlite::Connection;
+use crate::infrastructure::db::DbPool;
+use crate::infrastructure::event_bus::{EventBus, ModelSelection, UiToAgentEvent};
 
-pub fn open_model_popup(conn: &Connection, state: &mut UiState) {
+pub fn open_model_popup(conn: &DbPool, state: &mut UiState) {
     let _ = refresh_models_from_db(conn, state);
     state.mode = UiMode::Popup(PopupState::ModelSelect { selected: 0 });
 }
 
 pub fn handle_model_entry(
     bus: &EventBus,
-    conn: &Connection,
+    conn: &DbPool,
     state: &mut UiState,
     entry: &ModelEntry,
 ) -> Result<(), String> {
@@ -70,7 +70,7 @@ pub fn handle_model_entry(
 
 pub fn handle_openai_available_selection(
     bus: &EventBus,
-    conn: &Connection,
+    conn: &DbPool,
     state: &mut UiState,
     name: &str,
 ) -> Result<(), String> {

@@ -1,19 +1,23 @@
+mod agent_mode;
+mod bt;
+pub mod permissions;
 mod project;
-mod user_settings;
 pub mod prompting;
 pub mod session;
 pub mod startup;
 pub mod tools;
+mod user_settings;
 pub mod workflow;
-pub mod permissions;
-mod bt;
+pub mod todo;
 
+pub use agent_mode::AgentModeType;
 pub use project::Project;
 pub use session::service::SessionService;
 pub use session::{Session, SessionRequest};
 pub use startup::StartupService;
 pub use user_settings::UserSettings;
 pub use workflow::{CancellationToken, Chain};
+pub use todo::{TodoList, TodoItem};
 
 /// Model type enum matching the inference engine types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

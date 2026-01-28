@@ -55,7 +55,7 @@ impl PermissionChecker {
         );
         let decision = self.resolve_permission(&permission_request)?;
         if decision == PermissionDecision::Ask
-            && self.should_allow_read_only(tool, request, &permission_request)
+            && self.is_allowed_by_default(tool, request, &permission_request)
         {
             return Ok(true);
         }
@@ -138,12 +138,18 @@ impl PermissionChecker {
         Ok(self.config.default_decision.clone())
     }
 
-    fn should_allow_read_only(
+    fn is_allowed_by_default(
         &self,
         tool: &dyn Tool,
         request: &dyn Request,
         permission_request: &PermissionRequest,
     ) -> bool {
+        // Allow safe tools that don't require permission
+        if tool.skip_permission_check() {
+            return true;
+        }
+
+        // Allow read-only tools if paths are within project root
         if !tool.is_read_only() {
             return false;
         }
@@ -341,6 +347,10 @@ mod tests {
             "test"
         }
 
+        fn mode(&self) -> crate::domain::AgentModeType {
+            crate::domain::AgentModeType::Build
+        }
+
         fn project_root(&self) -> &Path {
             &self.root
         }
@@ -354,6 +364,22 @@ mod tests {
         }
 
         fn set_final_message(&mut self, _message: String) {}
+
+        fn images(&self) -> &[String] {
+            &[]
+        }
+
+        fn session_id(&self) -> Option<i64> {
+            None
+        }
+
+        fn get_history_steps(&self) -> Vec<crate::domain::workflow::step::ChainStep> {
+            Vec::new()
+        }
+
+        fn get_session_plan(&self) -> Option<crate::domain::todo::TodoList> {
+            None
+        }
     }
 
     struct ReadOnlyTool {
@@ -761,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_permission_no_ask_on_read_only() {
+    fn resolve_permission_returns_ask_for_read_only() {
         let abs = std::fs::canonicalize(".").expect("failed to canonicalize path");
 
         let store = Arc::new(TestStore::with_permissions(None, None, None));

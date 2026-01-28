@@ -206,10 +206,16 @@ impl Tool for PatchFiles {
                 };
 
             if added_lines > 0 || deleted_lines > 0 {
+                let unified_diff = generate_unified_diff(
+                    path,
+                    original.map(|s| s.as_str()),
+                    new_content.map(|s| s.as_str()),
+                );
                 file_changes.push(FileChange {
                     path: path.clone(),
                     added_lines,
                     deleted_lines,
+                    unified_diff,
                 });
             }
         }
@@ -337,6 +343,97 @@ fn compute_line_diff(old: &str, new: &str) -> (u32, u32) {
     (added, deleted)
 }
 
+fn generate_unified_diff(path: &str, old: Option<&str>, new: Option<&str>) -> String {
+    match (old, new) {
+        (Some(old_content), Some(new_content)) => {
+            // Modified file
+            let diff = TextDiff::from_lines(old_content, new_content);
+            let mut result = String::new();
+
+            result.push_str(&format!("--- a/{}\n", path));
+            result.push_str(&format!("+++ b/{}\n", path));
+
+            // Generate hunks
+            let mut old_line = 1;
+            let mut new_line = 1;
+            let mut hunk_changes = Vec::new();
+            let mut hunk_old_start = 1;
+            let mut hunk_new_start = 1;
+
+            for change in diff.iter_all_changes() {
+                if hunk_changes.is_empty() {
+                    hunk_old_start = old_line;
+                    hunk_new_start = new_line;
+                }
+
+                match change.tag() {
+                    similar::ChangeTag::Equal => {
+                        hunk_changes.push(format!(" {}", change));
+                        old_line += 1;
+                        new_line += 1;
+                    }
+                    similar::ChangeTag::Delete => {
+                        hunk_changes.push(format!("-{}", change));
+                        old_line += 1;
+                    }
+                    similar::ChangeTag::Insert => {
+                        hunk_changes.push(format!("+{}", change));
+                        new_line += 1;
+                    }
+                }
+            }
+
+            if !hunk_changes.is_empty() {
+                let hunk_old_len = old_line - hunk_old_start;
+                let hunk_new_len = new_line - hunk_new_start;
+                result.push_str(&format!(
+                    "@@ -{},{} +{},{} @@\n",
+                    hunk_old_start, hunk_old_len, hunk_new_start, hunk_new_len
+                ));
+                for change in hunk_changes {
+                    result.push_str(&change);
+                }
+            }
+
+            result
+        }
+        (None, Some(new_content)) => {
+            // New file
+            let mut result = String::new();
+            result.push_str(&format!("--- /dev/null\n"));
+            result.push_str(&format!("+++ b/{}\n", path));
+
+            let line_count = new_content.lines().count();
+            result.push_str(&format!("@@ -0,0 +1,{} @@\n", line_count));
+
+            for line in new_content.lines() {
+                result.push_str(&format!("+{}\n", line));
+            }
+
+            result
+        }
+        (Some(old_content), None) => {
+            // Deleted file
+            let mut result = String::new();
+            result.push_str(&format!("--- a/{}\n", path));
+            result.push_str(&format!("+++ /dev/null\n"));
+
+            let line_count = old_content.lines().count();
+            result.push_str(&format!("@@ -1,{} +0,0 @@\n", line_count));
+
+            for line in old_content.lines() {
+                result.push_str(&format!("-{}\n", line));
+            }
+
+            result
+        }
+        (None, None) => {
+            // No change (shouldn't happen)
+            String::new()
+        }
+    }
+}
+
 impl Default for PatchFiles {
     fn default() -> Self {
         Self::new()
@@ -377,6 +474,10 @@ mod tests {
             &self.current_request
         }
 
+        fn mode(&self) -> crate::domain::AgentModeType {
+            crate::domain::AgentModeType::Build
+        }
+
         fn project_root(&self) -> &Path {
             &self.root
         }
@@ -391,6 +492,22 @@ mod tests {
 
         fn set_final_message(&mut self, message: String) {
             self.final_message = Some(message);
+        }
+
+        fn images(&self) -> &[String] {
+            &[]
+        }
+
+        fn session_id(&self) -> Option<i64> {
+            None
+        }
+
+        fn get_history_steps(&self) -> Vec<crate::domain::workflow::step::ChainStep> {
+            Vec::new()
+        }
+
+        fn get_session_plan(&self) -> Option<crate::domain::todo::TodoList> {
+            None
         }
     }
 

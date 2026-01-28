@@ -1,8 +1,11 @@
 use directories::ProjectDirs;
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
+
+pub type DbPool = Pool<SqliteConnectionManager>;
 
 /// Resolves the OS-specific data directory for the application.
 fn get_data_dir(app_name: &str) -> Result<PathBuf, String> {
@@ -11,34 +14,16 @@ fn get_data_dir(app_name: &str) -> Result<PathBuf, String> {
         .ok_or_else(|| "Failed to resolve application data directory".to_string())
 }
 
-/// Initializes the SQLite database, creating it if necessary.
-/// Returns an open Connection or exits with an error.
-pub fn init_db(app_name: &str) -> Result<Arc<Connection>, String> {
-    let data_dir = get_data_dir(app_name)?;
-
-    // Ensure parent directories exist
-    fs::create_dir_all(&data_dir).map_err(|e| format!("Failed to create data directory: {}", e))?;
-
-    let db_path = data_dir.join("agent.db");
-    let db_exists = db_path.exists();
-
-    // Open or create database
-    let conn = Connection::open(&db_path).map_err(|e| format!("Failed to open database: {}", e))?;
-
-    if db_exists {
-        log::info!("Database opened: {}", db_path.display());
-    } else {
-        log::info!("Database created: {}", db_path.display());
-    }
-
-    // Set pragmas
+fn configure_connection(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
          PRAGMA busy_timeout = 5000;",
-    )
-    .map_err(|e| format!("Failed to set pragmas: {}", e))?;
+    )?;
+    Ok(())
+}
 
+fn run_migrations(conn: &Connection) -> Result<(), String> {
     // Create tables
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS meta (
@@ -69,6 +54,7 @@ pub fn init_db(app_name: &str) -> Result<Arc<Connection>, String> {
             prompt TEXT NOT NULL,
             result_summary TEXT,
             steps_log TEXT,
+            mode TEXT NOT NULL DEFAULT 'build',
             created_at TEXT NOT NULL,
             FOREIGN KEY (session_id) REFERENCES sessions(id),
             FOREIGN KEY (user_settings_id) REFERENCES user_settings(id)
@@ -640,11 +626,233 @@ pub fn init_db(app_name: &str) -> Result<Arc<Connection>, String> {
         log::info!("Database migration to version 12 completed");
     }
 
+    // Migration to version 13: add todo_lists table
+    if current_version < 13 {
+        log::info!("Migrating database from version {} to 13", current_version);
+
+        // Check if todo_lists table exists
+        let todo_lists_exists = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='todo_lists'")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| row.get::<_, String>(0))
+                    .map(|mut rows| rows.next().is_some())
+            })
+            .unwrap_or(false);
+
+        if !todo_lists_exists {
+            log::info!("Creating todo_lists table");
+            conn.execute(
+                "CREATE TABLE todo_lists (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id INTEGER NOT NULL UNIQUE,
+                    content TEXT NOT NULL DEFAULT '{\"items\":[]}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id)
+                )",
+                [],
+            )
+            .map_err(|e| format!("Failed to create todo_lists table: {}", e))?;
+        }
+
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '13')",
+            [],
+        )
+        .map_err(|e| format!("Failed to update schema_version: {}", e))?;
+
+        log::info!("Database migration to version 13 completed");
+    }
+
+    // Migration to version 14: move todo_items into todo_lists.content
+    if current_version < 14 {
+        log::info!("Migrating database from version {} to 14", current_version);
+
+        let content_column_exists = conn
+            .prepare("SELECT name FROM pragma_table_info('todo_lists') WHERE name = 'content'")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| row.get::<_, String>(0))
+                    .map(|mut rows| rows.next().is_some())
+            })
+            .unwrap_or(false);
+
+        if !content_column_exists {
+            log::info!("Adding content column to todo_lists table");
+            conn.execute(
+                "ALTER TABLE todo_lists ADD COLUMN content TEXT NOT NULL DEFAULT '{\"items\":[]}'",
+                [],
+            )
+            .map_err(|e| format!("Failed to add content column: {}", e))?;
+        }
+
+        let todo_items_exists = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='todo_items'")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| row.get::<_, String>(0))
+                    .map(|mut rows| rows.next().is_some())
+            })
+            .unwrap_or(false);
+
+        if todo_items_exists {
+            log::info!("Migrating todo_items into todo_lists.content");
+            let mut list_stmt = conn
+                .prepare("SELECT id FROM todo_lists")
+                .map_err(|e| format!("Failed to query todo_lists: {}", e))?;
+            let list_ids = list_stmt
+                .query_map([], |row| row.get::<_, i64>(0))
+                .map_err(|e| format!("Failed to map todo_lists rows: {}", e))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to collect todo_lists rows: {}", e))?;
+
+            for list_id in list_ids {
+                let mut item_stmt = conn
+                    .prepare(
+                        "SELECT title, description, status, position
+                         FROM todo_items
+                         WHERE todo_list_id = ?
+                         ORDER BY position ASC",
+                    )
+                    .map_err(|e| format!("Failed to query todo_items: {}", e))?;
+
+                let items = item_stmt
+                    .query_map(params![list_id], |row| {
+                        Ok(serde_json::json!({
+                            "title": row.get::<_, String>(0)?,
+                            "description": row.get::<_, String>(1)?,
+                            "status": row.get::<_, String>(2)?,
+                            "position": row.get::<_, i32>(3)?,
+                        }))
+                    })
+                    .map_err(|e| format!("Failed to map todo_items rows: {}", e))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("Failed to collect todo_items rows: {}", e))?;
+
+                let content = serde_json::json!({ "items": items }).to_string();
+                conn.execute(
+                    "UPDATE todo_lists SET content = ? WHERE id = ?",
+                    params![content, list_id],
+                )
+                .map_err(|e| format!("Failed to update todo_lists content: {}", e))?;
+            }
+
+            conn.execute("DROP TABLE todo_items", [])
+                .map_err(|e| format!("Failed to drop todo_items table: {}", e))?;
+        }
+
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '14')",
+            [],
+        )
+        .map_err(|e| format!("Failed to update schema_version: {}", e))?;
+
+        log::info!("Database migration to version 14 completed");
+    }
+
+    // Migration to version 15: add mode column to session_requests
+    if current_version < 15 {
+        log::info!("Migrating database from version {} to 15", current_version);
+
+        let column_exists = conn
+            .prepare("SELECT name FROM pragma_table_info('session_requests') WHERE name = 'mode'")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| row.get::<_, String>(0))
+                    .map(|mut rows| rows.next().is_some())
+            })
+            .unwrap_or(false);
+
+        if !column_exists {
+            log::info!("Adding mode column to session_requests table");
+            conn.execute(
+                "ALTER TABLE session_requests ADD COLUMN mode TEXT NOT NULL DEFAULT 'build'",
+                [],
+            )
+            .map_err(|e| format!("Failed to add mode column: {}", e))?;
+        }
+
+        conn.execute(
+            "UPDATE session_requests SET mode = 'build' WHERE mode IS NULL",
+            [],
+        )
+        .map_err(|e| format!("Failed to backfill session_requests mode: {}", e))?;
+
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '15')",
+            [],
+        )
+        .map_err(|e| format!("Failed to update schema_version: {}", e))?;
+
+        log::info!("Database migration to version 15 completed");
+    }
+
+    // Migration v16: Add session_request_steps table for storing chain steps
+    if current_version < 16 {
+        log::info!("Migrating database from version {} to 16", current_version);
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_request_steps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id INTEGER NOT NULL,
+                step_index INTEGER NOT NULL,
+                step_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (request_id) REFERENCES session_requests(id) ON DELETE CASCADE
+            )",
+            [],
+        )
+        .map_err(|e| format!("Failed to create session_request_steps table: {}", e))?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_steps_request ON session_request_steps(request_id)",
+            [],
+        )
+        .map_err(|e| format!("Failed to create index on session_request_steps: {}", e))?;
+
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '16')",
+            [],
+        )
+        .map_err(|e| format!("Failed to update schema_version: {}", e))?;
+
+        log::info!("Database migration to version 16 completed");
+    }
+
     conn.execute(
         "INSERT OR IGNORE INTO user_settings (id, openai_tracing_enabled, use_behavior_trees, web_search_enabled) VALUES (1, 0, 0, 0)",
         [],
     )
     .map_err(|e| format!("Failed to ensure user_settings row: {}", e))?;
 
-    Ok(Arc::new(conn))
+    Ok(())
+}
+
+/// Initializes the SQLite database, creating it if necessary.
+/// Returns an open connection pool for thread-safe sharing
+pub fn init_db(app_name: &str) -> Result<DbPool, String> {
+    let data_dir = get_data_dir(app_name)?;
+
+    // Ensure parent directories exist
+    fs::create_dir_all(&data_dir).map_err(|e| format!("Failed to create data directory: {}", e))?;
+
+    let db_path = data_dir.join("agent.db");
+    let db_exists = db_path.exists();
+
+    let manager =
+        SqliteConnectionManager::file(&db_path).with_init(|conn| configure_connection(conn));
+    let pool = Pool::builder()
+        .max_size(8)
+        .build(manager)
+        .map_err(|e| format!("Failed to create database pool: {}", e))?;
+
+    if db_exists {
+        log::info!("Database opened: {}", db_path.display());
+    } else {
+        log::info!("Database created: {}", db_path.display());
+    }
+
+    let conn = pool
+        .get()
+        .map_err(|e| format!("Failed to get database connection: {}", e))?;
+    run_migrations(&conn)?;
+
+    Ok(pool)
 }

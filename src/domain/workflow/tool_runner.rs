@@ -2,33 +2,49 @@ use crate::domain::permissions::PermissionChecker;
 use crate::domain::session::Request;
 use crate::domain::tools::Tool;
 use crate::domain::tools::ToolResult;
-use crate::infrastructure::app_bus::{AgentToUiEvent, StepPhase};
+use crate::domain::workflow::toolset::Toolset;
+use crate::infrastructure::event_bus::{AgentToUiEvent, StepPhase};
+use crate::infrastructure::inference::ToolCall;
 use crossbeam_channel::Sender;
 use openai_agents_tracing::TracingFacade;
 use std::sync::Arc;
 
 pub struct ToolRunner {
     permission_checker: Arc<PermissionChecker>,
-    progress_tx: Option<Sender<AgentToUiEvent>>,
+    event_sender: Sender<AgentToUiEvent>,
 }
 
 impl ToolRunner {
     pub fn new(
         permission_checker: Arc<PermissionChecker>,
-        progress_tx: Option<Sender<AgentToUiEvent>>,
+        event_sender: Sender<AgentToUiEvent>,
     ) -> Self {
         Self {
             permission_checker,
-            progress_tx,
+            event_sender,
         }
     }
 
     pub fn run(
         &self,
         request: &mut dyn Request,
-        tool: &dyn Tool,
+        tool_call: ToolCall,
+        toolset: &dyn Toolset,
         tracer: Option<&mut TracingFacade>,
     ) -> ToolResult {
+        let tool = match toolset.prepare_tool(&tool_call) {
+            Ok(t) => t,
+            Err(e) => {
+                let error_msg = format!("Failed to prepare tool '{}': {}", tool_call.name, e);
+                log::error!("{}", error_msg);
+                return ToolResult::error(
+                    tool_call.name.clone(),
+                    tool_call.arguments.clone(),
+                    error_msg,
+                );
+            }
+        };
+
         match tracer {
             Some(tracer) => {
                 tracer.start_span(tool.name(), openai_agents_tracing::SpanKind::Function);
@@ -73,12 +89,10 @@ impl ToolRunner {
     }
 
     fn emit_progress(&self, tool: &dyn Tool, request: &dyn Request) {
-        if let Some(tx) = &self.progress_tx {
-            let _ = tx.send(AgentToUiEvent::ProgressEvent {
-                step_name: tool.name().to_string(),
-                phase: StepPhase::Before,
-                summary: tool.get_progress_message(request),
-            });
-        }
+        let _ = self.event_sender.send(AgentToUiEvent::ProgressEvent {
+            step_name: tool.name().to_string(),
+            phase: StepPhase::Before,
+            summary: tool.get_progress_message(request),
+        });
     }
 }

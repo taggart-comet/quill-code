@@ -48,7 +48,6 @@ impl<'a> MetaRepository<'a> {
     pub fn set_last_used_model_id(&self, model_id: i64) -> Result<(), String> {
         self.set("last_used_model_id", &model_id.to_string())
     }
-
 }
 
 trait OptionalExt<T> {

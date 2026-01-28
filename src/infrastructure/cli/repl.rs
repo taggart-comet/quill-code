@@ -1,23 +1,24 @@
 use crate::domain::ModelType;
-use crate::infrastructure::app_bus::{
-    AgentToUiEvent, EventBus, ModelSelection, RequestStatus, StepPhase,
-};
 use crate::infrastructure::cli::state::{
     FileChangesDisplay, LoadStatus, PopupState, ProgressEntry, ProgressKind, RequestIndicator,
     RequestStatusDisplay, UiMode, UiState,
 };
-use crate::infrastructure::db;
+use crate::infrastructure::db::{self, DbPool};
+use crate::infrastructure::event_bus::{
+    AgentToUiEvent, EventBus, ModelSelection, RequestStatus, StepPhase,
+};
 use crate::infrastructure::inference::openai::OpenAIEngine;
-use crate::infrastructure::init::get_current_model_name;
 
 use crate::repository::{MetaRepository, ModelsRepository, UserSettingsRepository};
-use crossterm::event::{self, Event as CrosstermEvent};
+use crossterm::event::{
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event as CrosstermEvent,
+};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
 use ratatui::Terminal;
-use rusqlite::Connection;
 use std::io;
 use std::time::Duration;
 
@@ -31,14 +32,32 @@ pub fn run(bus: EventBus, app_name: String) -> Result<(), String> {
     stdout
         .execute(EnterAlternateScreen)
         .map_err(|e| e.to_string())?;
+    stdout
+        .execute(EnableBracketedPaste)
+        .map_err(|e| e.to_string())?;
+    stdout
+        .execute(EnableMouseCapture)
+        .map_err(|e| e.to_string())?;
 
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).map_err(|e| e.to_string())?;
     terminal.clear().map_err(|e| e.to_string())?;
+    terminal
+        .backend_mut()
+        .execute(EnableMouseCapture)
+        .map_err(|e| e.to_string())?;
 
     let result = run_loop(&mut terminal, &bus, &conn, &mut state);
 
     disable_raw_mode().map_err(|e| e.to_string())?;
+    terminal
+        .backend_mut()
+        .execute(DisableBracketedPaste)
+        .map_err(|e| e.to_string())?;
+    terminal
+        .backend_mut()
+        .execute(DisableMouseCapture)
+        .map_err(|e| e.to_string())?;
     terminal
         .backend_mut()
         .execute(LeaveAlternateScreen)
@@ -51,7 +70,7 @@ pub fn run(bus: EventBus, app_name: String) -> Result<(), String> {
 fn run_loop(
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
     bus: &EventBus,
-    conn: &Connection,
+    conn: &DbPool,
     state: &mut UiState,
 ) -> Result<(), String> {
     let tick_rate = Duration::from_millis(50);
@@ -62,8 +81,41 @@ fn run_loop(
         }
 
         if event::poll(tick_rate).map_err(|e| e.to_string())? {
-            if let CrosstermEvent::Key(key) = event::read().map_err(|e| e.to_string())? {
-                crate::infrastructure::cli::controls::handle_key_event(bus, conn, state, key)?;
+            let evt = event::read().map_err(|e| e.to_string())?;
+            match evt {
+                CrosstermEvent::Key(key) => {
+                    // Log Cmd+V attempts
+                    if key.code == crossterm::event::KeyCode::Char('v')
+                        && (key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::SUPER)
+                            || key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL))
+                    {
+                        log::info!(
+                            "Cmd+V / Ctrl+V key event received (modifiers: {:?})",
+                            key.modifiers
+                        );
+                    }
+                    crate::infrastructure::cli::controls::handle_key_event(bus, conn, state, key)?;
+                }
+                CrosstermEvent::Mouse(mouse) => {
+                    crate::infrastructure::cli::controls::handle_mouse_event(state, mouse);
+                }
+                CrosstermEvent::Paste(data) => {
+                    log::info!("!!!! PASTE EVENT RECEIVED with {} bytes !!!!", data.len());
+                    crate::infrastructure::cli::controls::handle_paste_event(state, data)?;
+                }
+                CrosstermEvent::Resize(_, _) => {
+                    log::debug!("Resize event");
+                }
+                CrosstermEvent::FocusGained => {
+                    log::debug!("Focus gained");
+                }
+                CrosstermEvent::FocusLost => {
+                    log::debug!("Focus lost");
+                }
             }
         }
 
@@ -87,7 +139,7 @@ fn run_loop(
 }
 
 fn handle_agent_event(
-    conn: &Connection,
+    conn: &DbPool,
     state: &mut UiState,
     event: AgentToUiEvent,
 ) -> Result<(), String> {
@@ -95,7 +147,11 @@ fn handle_agent_event(
         AgentToUiEvent::SessionStartedEvent { title } => {
             state.header_title = Some(title);
         }
-        AgentToUiEvent::RequestStartedEvent { request_id, label } => {
+        AgentToUiEvent::RequestStartedEvent {
+            request_id,
+            label,
+            prompt,
+        } => {
             state.request_in_flight = Some(RequestIndicator {
                 request_id,
                 label,
@@ -104,6 +160,14 @@ fn handle_agent_event(
             state.request_status = None;
             state.request_progress = None;
             state.file_changes = None;
+
+            // Display the user's message
+            state.push_progress(ProgressEntry {
+                text: prompt,
+                kind: ProgressKind::UserMessage,
+                active: false,
+                request_id: Some(request_id),
+            });
         }
         AgentToUiEvent::ProgressEvent {
             step_name: _step_name,
@@ -143,12 +207,28 @@ fn handle_agent_event(
                 });
             }
             state.request_progress = None;
+
+            // Update the user message color based on request status
+            for entry in state.progress.iter_mut() {
+                if entry.request_id == Some(request_id) && entry.kind == ProgressKind::UserMessage {
+                    entry.kind = match status {
+                        RequestStatus::Success => ProgressKind::UserMessageSuccess,
+                        RequestStatus::Failure => ProgressKind::UserMessageError,
+                        RequestStatus::Cancelled => ProgressKind::UserMessageCancelled,
+                    };
+                }
+            }
+
+            // Only show summary for failures, skip for success
             if let Some(summary) = summary {
-                state.push_progress(ProgressEntry {
-                    text: summary,
-                    kind: finish_kind,
-                    active: false,
-                });
+                if status != RequestStatus::Success {
+                    state.push_progress(ProgressEntry {
+                        text: summary,
+                        kind: finish_kind,
+                        active: false,
+                        request_id: None,
+                    });
+                }
             }
             if let Some(message) = final_message {
                 for line in message.lines() {
@@ -157,6 +237,7 @@ fn handle_agent_event(
                             text: line.to_string(),
                             kind: ProgressKind::Info,
                             active: false,
+                            request_id: None,
                         });
                     }
                 }
@@ -190,13 +271,29 @@ fn handle_agent_event(
                 selected: 0,
             });
         }
+        AgentToUiEvent::TodoListUpdateEvent { items } => {
+            use crate::infrastructure::cli::state::{TodoItemDisplay, TodoListDisplay};
+            state.todo_list = Some(TodoListDisplay {
+                items: items
+                    .into_iter()
+                    .map(|item| TodoItemDisplay {
+                        title: item.title,
+                        description: item.description,
+                        status: item.status.as_str().to_string(),
+                    })
+                    .collect(),
+            });
+        }
     }
 
     Ok(())
 }
 
-pub(crate) fn refresh_models_from_db(conn: &Connection, state: &mut UiState) -> Result<(), String> {
-    let models_repo = ModelsRepository::new(conn);
+pub(crate) fn refresh_models_from_db(conn: &DbPool, state: &mut UiState) -> Result<(), String> {
+    let conn_guard = conn
+        .get()
+        .map_err(|e| format!("Failed to get connection: {}", e))?;
+    let models_repo = ModelsRepository::new(&*conn_guard);
     let models = models_repo
         .find_by_type(ModelType::OpenAI)
         .map_err(|e| e.to_string())?;
@@ -205,7 +302,7 @@ pub(crate) fn refresh_models_from_db(conn: &Connection, state: &mut UiState) -> 
         .filter_map(|model| {
             model
                 .model_name
-                .map(|name| crate::infrastructure::app_bus::OpenAiModelInfo {
+                .map(|name| crate::infrastructure::event_bus::OpenAiModelInfo {
                     _id: model.id,
                     name,
                 })
@@ -221,27 +318,42 @@ pub(crate) fn refresh_models_from_db(conn: &Connection, state: &mut UiState) -> 
     Ok(())
 }
 
-pub(crate) fn refresh_settings_from_db(
-    conn: &Connection,
-    state: &mut UiState,
-) -> Result<(), String> {
-    let settings_repo = UserSettingsRepository::new(conn);
+pub(crate) fn refresh_settings_from_db(conn: &DbPool, state: &mut UiState) -> Result<(), String> {
+    let conn_guard = conn
+        .get()
+        .map_err(|e| format!("Failed to get connection: {}", e))?;
+    let settings_repo = UserSettingsRepository::new(&*conn_guard);
     let settings = settings_repo.get_current().map_err(|e| e.to_string())?;
     state.settings.use_behavior_trees = settings.use_behavior_trees;
     state.settings.openai_tracing_enabled = settings.openai_tracing_enabled;
     state.settings.web_search_enabled = settings.web_search_enabled;
     state.settings.status = LoadStatus::Loaded;
-    state.current_model = get_current_model_name(conn).unwrap_or_else(|_| "unknown".to_string());
+
+    // Get both model name and type
+    match crate::infrastructure::init::get_current_model_info(conn) {
+        Ok((name, model_type)) => {
+            state.current_model = name;
+            state.current_model_type = Some(model_type);
+        }
+        Err(_) => {
+            state.current_model = "unknown".to_string();
+            state.current_model_type = None;
+        }
+    }
+
     Ok(())
 }
 
 pub(crate) fn update_settings_in_db(
-    conn: &Connection,
+    conn: &DbPool,
     use_behavior_trees: bool,
     openai_tracing: bool,
     web_search: bool,
 ) -> Result<(), String> {
-    let settings_repo = UserSettingsRepository::new(conn);
+    let conn_guard = conn
+        .get()
+        .map_err(|e| format!("Failed to get connection: {}", e))?;
+    let settings_repo = UserSettingsRepository::new(&*conn_guard);
     settings_repo
         .update_use_behavior_trees(use_behavior_trees)
         .map_err(|e| e.to_string())?;
@@ -255,12 +367,15 @@ pub(crate) fn update_settings_in_db(
 }
 
 pub(crate) fn update_model_selection_in_db(
-    conn: &Connection,
+    conn: &DbPool,
     selection: &ModelSelection,
 ) -> Result<(), String> {
-    let models_repo = ModelsRepository::new(conn);
-    let meta_repo = MetaRepository::new(conn);
-    let settings_repo = UserSettingsRepository::new(conn);
+    let conn_guard = conn
+        .get()
+        .map_err(|e| format!("Failed to get connection: {}", e))?;
+    let models_repo = ModelsRepository::new(&*conn_guard);
+    let meta_repo = MetaRepository::new(&*conn_guard);
+    let settings_repo = UserSettingsRepository::new(&*conn_guard);
 
     match selection {
         ModelSelection::LocalPath(path) => {
@@ -329,10 +444,13 @@ pub(crate) fn update_model_selection_in_db(
 }
 
 pub(crate) fn fetch_openai_available_models(
-    conn: &Connection,
+    conn: &DbPool,
     state: &mut UiState,
 ) -> Result<(), String> {
-    let settings_repo = UserSettingsRepository::new(conn);
+    let conn_guard = conn
+        .get()
+        .map_err(|e| format!("Failed to get connection: {}", e))?;
+    let settings_repo = UserSettingsRepository::new(&*conn_guard);
     let settings = settings_repo.get_current().map_err(|e| e.to_string())?;
     let api_key = match settings.openai_api_key {
         Some(key) => key,
@@ -367,7 +485,6 @@ pub(crate) fn fetch_openai_available_models(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::app_bus::{LocalModelInfo, ModelSelection, OpenAiModelInfo};
     use crate::infrastructure::cli::helpers::{
         cursor_position, delete_next_char, delete_prev_char, insert_char, next_char_boundary,
         prev_char_boundary,
@@ -375,6 +492,7 @@ mod tests {
     use crate::infrastructure::cli::views::main_view::{
         model_entries, openai_available_entries, openai_available_filtered, ModelEntry,
     };
+    use crate::infrastructure::event_bus::{LocalModelInfo, ModelSelection, OpenAiModelInfo};
     use crate::repository::{MetaRepository, ModelsRepository, UserSettingsRepository};
     use directories::ProjectDirs;
     use std::fs::{self, File};
@@ -397,7 +515,7 @@ mod tests {
 
     fn with_test_db<F>(f: F)
     where
-        F: FnOnce(std::sync::Arc<Connection>, String),
+        F: FnOnce(DbPool, String),
     {
         let app_name = unique_app_name();
         let conn = db::init_db(&app_name).expect("init db");
@@ -520,17 +638,18 @@ mod tests {
         with_test_db(|conn, _| {
             update_model_selection_in_db(&conn, &ModelSelection::OpenAiModel("gpt-4o".to_string()))
                 .expect("update model");
-            let settings_repo = UserSettingsRepository::new(&conn);
+            let conn_guard = conn.get().expect("db conn");
+            let settings_repo = UserSettingsRepository::new(&*conn_guard);
             let settings = settings_repo.get_current().expect("settings");
             let model_id = settings.current_model_id.expect("model id");
 
-            let meta_repo = MetaRepository::new(&conn);
+            let meta_repo = MetaRepository::new(&*conn_guard);
             assert_eq!(
                 meta_repo.get_last_used_model_id().expect("meta"),
                 Some(model_id)
             );
 
-            let models_repo = ModelsRepository::new(&conn);
+            let models_repo = ModelsRepository::new(&*conn_guard);
             let model = models_repo
                 .find_by_id(model_id)
                 .expect("model row")
@@ -556,17 +675,18 @@ mod tests {
                 .to_string();
             remove_temp_file(&temp_path);
 
-            let settings_repo = UserSettingsRepository::new(&conn);
+            let conn_guard = conn.get().expect("db conn");
+            let settings_repo = UserSettingsRepository::new(&*conn_guard);
             let settings = settings_repo.get_current().expect("settings");
             let model_id = settings.current_model_id.expect("model id");
 
-            let meta_repo = MetaRepository::new(&conn);
+            let meta_repo = MetaRepository::new(&*conn_guard);
             assert_eq!(
                 meta_repo.get_last_used_model_id().expect("meta"),
                 Some(model_id)
             );
 
-            let models_repo = ModelsRepository::new(&conn);
+            let models_repo = ModelsRepository::new(&*conn_guard);
             let model = models_repo
                 .find_by_id(model_id)
                 .expect("model row")

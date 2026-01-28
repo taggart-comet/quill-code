@@ -1,9 +1,9 @@
-use crate::infrastructure::app_bus::{EventBus, UiToAgentEvent};
 use crate::infrastructure::cli::repl::{refresh_settings_from_db, update_settings_in_db};
 use crate::infrastructure::cli::state::{PopupState, UiMode, UiState};
-use rusqlite::Connection;
+use crate::infrastructure::db::DbPool;
+use crate::infrastructure::event_bus::{EventBus, UiToAgentEvent};
 
-pub fn open_settings_popup(conn: &Connection, state: &mut UiState) {
+pub fn open_settings_popup(conn: &DbPool, state: &mut UiState) {
     let _ = refresh_settings_from_db(conn, state);
     state.mode = UiMode::Popup(PopupState::SettingsToggle {
         selected: 0,
@@ -15,7 +15,7 @@ pub fn open_settings_popup(conn: &Connection, state: &mut UiState) {
 
 pub fn submit_settings(
     bus: &EventBus,
-    conn: &Connection,
+    conn: &DbPool,
     state: &mut UiState,
     behavior_trees: bool,
     openai_tracing: bool,
@@ -28,7 +28,7 @@ pub fn submit_settings(
 
 pub fn apply_settings(
     bus: &EventBus,
-    conn: &Connection,
+    conn: &DbPool,
     state: &mut UiState,
     behavior_trees: bool,
     openai_tracing: bool,
@@ -51,7 +51,7 @@ pub fn apply_settings(
 
 pub fn submit_brave_api_key(
     bus: &EventBus,
-    conn: &Connection,
+    conn: &DbPool,
     state: &mut UiState,
     behavior_trees: bool,
     openai_tracing: bool,

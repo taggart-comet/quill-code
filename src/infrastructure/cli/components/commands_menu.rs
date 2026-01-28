@@ -21,7 +21,7 @@ pub fn commands_items() -> Vec<CommandsMenuItem> {
         },
         CommandsMenuItem {
             label: "Mode",
-            description: "Build (Plan is disabled for now)",
+            description: "Switch between Build and Plan (Press Tab)",
         },
         CommandsMenuItem {
             label: "Settings",

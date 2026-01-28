@@ -1,4 +1,6 @@
 use super::session_request::SessionRequest;
+use crate::domain::workflow::step::ChainStep;
+use crate::domain::AgentModeType;
 use std::path::Path;
 
 /// Trait for request context used by workflow execution.
@@ -11,6 +13,10 @@ pub trait Request {
     /// Get the current request prompt
     fn current_request(&self) -> &str;
 
+    /// Get the current agent mode
+    #[allow(dead_code)]
+    fn mode(&self) -> AgentModeType;
+
     /// Get the project root path
     fn project_root(&self) -> &Path;
 
@@ -22,6 +28,16 @@ pub trait Request {
 
     /// Store a final message produced by the workflow
     fn set_final_message(&mut self, message: String);
-}
 
- 
+    /// Get attached images (data URLs)
+    fn images(&self) -> &[String];
+
+    /// Get session ID for database operations
+    fn session_id(&self) -> Option<i64>;
+
+    /// Get history steps from previous requests in this session
+    fn get_history_steps(&self) -> Vec<ChainStep>;
+
+    /// Get the session's TODO list (plan)
+    fn get_session_plan(&self) -> Option<crate::domain::todo::TodoList>;
+}

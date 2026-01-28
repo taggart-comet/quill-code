@@ -96,13 +96,15 @@ impl InferenceEngine for LocalEngine {
         max_tokens: u32,
         _tools: &[&dyn crate::domain::tools::Tool],
         _chain: &crate::domain::workflow::Chain,
+        _images: &[String],
+        _tracer: Option<&mut openai_agents_tracing::TracingFacade>,
     ) -> Result<LLMInferenceResult, InfaError> {
         let prompt = format!("{}\n\n{}", system_prompt, user_prompt);
         let to_error = |msg: String| -> InfaError {
             std::io::Error::new(std::io::ErrorKind::Other, msg).into()
         };
-        let backend =
-            LlamaBackend::init().map_err(|e| to_error(format!("Failed to initialize backend: {}", e)))?;
+        let backend = LlamaBackend::init()
+            .map_err(|e| to_error(format!("Failed to initialize backend: {}", e)))?;
 
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(self.params.ctx_size))
@@ -170,7 +172,7 @@ impl InferenceEngine for LocalEngine {
         Ok(LLMInferenceResult {
             summary: output.trim().to_string(),
             raw_output: output,
-            chosen_tool: None,
+            tool_call: None,
         })
     }
 

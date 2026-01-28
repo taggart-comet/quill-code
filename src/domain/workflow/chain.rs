@@ -1,7 +1,7 @@
 use super::step::ChainStep;
 use crate::domain::tools::ToolResult;
 use serde::{Deserialize, Serialize};
-
+use crate::domain::todo::TodoList;
 use super::step::StepType;
 
 /// Represents an execution chain containing multiple steps
@@ -9,6 +9,10 @@ use super::step::StepType;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chain {
     pub steps: Vec<ChainStep>,
+    #[serde(skip)]
+    history_steps: Vec<ChainStep>,
+    #[serde(skip)]
+    pub todo_list: Option<TodoList>,
     pub is_failed: bool,
     pub fail_reason: String,
     #[serde(default)]
@@ -19,6 +23,8 @@ impl Chain {
     pub fn new() -> Self {
         Self {
             steps: Vec::new(),
+            history_steps: Vec::new(),
+            todo_list: None,
             is_failed: false,
             fail_reason: String::new(),
             final_message: None,
@@ -27,6 +33,12 @@ impl Chain {
 
     /// Add a step to the chain after executing a tool
     pub fn add_step(&mut self, result: ToolResult) {
+        if result.tool_name() == "update_todo_list" && result.is_successful() {
+            if let Ok(updated_todo_list) = serde_json::from_str::<TodoList>(&result.input_string()) {
+                self.set_todo_list(Some(updated_todo_list));
+                return;
+            }
+        }
         self.steps
             .push(ChainStep::new(StepType::ToolCall, Some(result)));
     }
@@ -46,6 +58,28 @@ impl Chain {
 
     pub fn steps(&self) -> &[ChainStep] {
         &self.steps
+    }
+
+    /// Add history steps loaded from database
+    pub fn add_history(&mut self, history: Vec<ChainStep>) {
+        self.history_steps = history;
+    }
+
+    /// Set the TODO list for this chain
+    pub fn set_todo_list(&mut self, todo_list: Option<TodoList>) {
+        self.todo_list = todo_list;
+    }
+
+    /// Get current request steps only (for saving to database)
+    pub fn get_steps(&self) -> &[ChainStep] {
+        &self.steps
+    }
+
+    /// Get all steps (history + current) for LLM context
+    pub fn get_steps_with_history(&self) -> Vec<ChainStep> {
+        let mut all_steps = self.history_steps.clone();
+        all_steps.extend(self.steps.clone());
+        all_steps
     }
 
     pub fn set_final_message(&mut self, message: String) {

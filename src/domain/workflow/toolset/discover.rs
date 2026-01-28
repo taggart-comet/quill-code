@@ -1,14 +1,17 @@
 use crate::domain::tools::*;
 use crate::domain::workflow::toolset::Toolset;
+use crate::infrastructure::db::DbPool;
 use std::collections::HashMap;
+use crossbeam_channel::Sender;
+use crate::infrastructure::AgentToUiEvent;
 
 /// General toolset containing read-only and utility tools
-pub struct ReadToolset {
+pub struct DiscoverToolset {
     tools: HashMap<String, Box<dyn Tool>>,
 }
 
-impl ReadToolset {
-    pub fn new() -> Self {
+impl DiscoverToolset {
+    pub fn new(session_id: i64, conn: DbPool, event_sender: Sender<AgentToUiEvent>) -> Self {
         let mut tools: HashMap<String, Box<dyn Tool>> = HashMap::new();
 
         let discover_objects = Box::new(DiscoverObjects::new());
@@ -23,11 +26,14 @@ impl ReadToolset {
         let structure = Box::new(Structure::new());
         tools.insert(structure.name().to_string(), structure);
 
+        let update_todo = Box::new(UpdateTodoList::new(session_id, conn, event_sender));
+        tools.insert(update_todo.name().to_string(), update_todo);
+
         Self { tools }
     }
 }
 
-impl Toolset for ReadToolset {
+impl Toolset for DiscoverToolset {
     fn tools(&self) -> &HashMap<String, Box<dyn Tool>> {
         &self.tools
     }

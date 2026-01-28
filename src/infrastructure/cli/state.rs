@@ -1,9 +1,37 @@
 use crate::domain::tools::FileChange;
-use crate::infrastructure::app_bus::{LocalModelInfo, OpenAiModelInfo};
+use crate::domain::AgentModeType;
 use crate::infrastructure::cli::loading_bar::LoadingBar;
+use crate::infrastructure::event_bus::{LocalModelInfo, OpenAiModelInfo};
 use ratatui_textarea::TextArea;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
+
+#[derive(Debug, Clone)]
+pub struct AttachedImage {
+    /// Base64-encoded image data
+    pub data: String,
+    /// MIME type (e.g., "image/png", "image/jpeg")
+    pub mime_type: String,
+    /// Human-readable size (e.g., "234 KB")
+    pub size: String,
+    /// Timestamp when attached
+    pub attached_at: Instant,
+}
+
+impl AttachedImage {
+    pub fn new(data: String, mime_type: String, size: String) -> Self {
+        Self {
+            data,
+            mime_type,
+            size,
+            attached_at: Instant::now(),
+        }
+    }
+
+    pub fn to_data_url(&self) -> String {
+        format!("data:{};base64,{}", self.mime_type, self.data)
+    }
+}
 
 pub const INPUT_MIN_HEIGHT: usize = 3;
 pub const INPUT_MAX_HEIGHT: usize = 6;
@@ -16,6 +44,10 @@ pub enum ProgressKind {
     Success,
     Error,
     Cancelled,
+    UserMessage,
+    UserMessageSuccess,
+    UserMessageError,
+    UserMessageCancelled,
 }
 
 pub const REQUEST_STATUS_DISPLAY_DURATION: Duration = Duration::from_secs(2);
@@ -32,7 +64,7 @@ pub struct RequestIndicator {
 #[allow(dead_code)]
 pub struct RequestStatusDisplay {
     pub request_id: u64,
-    pub status: crate::infrastructure::app_bus::RequestStatus,
+    pub status: crate::infrastructure::event_bus::RequestStatus,
     pub finished_at: Instant,
 }
 
@@ -41,12 +73,25 @@ pub struct ProgressEntry {
     pub text: String,
     pub kind: ProgressKind,
     pub active: bool,
+    pub request_id: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
 pub struct FileChangesDisplay {
     pub request_id: i64,
     pub changes: Vec<FileChange>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TodoListDisplay {
+    pub items: Vec<TodoItemDisplay>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TodoItemDisplay {
+    pub title: String,
+    pub description: String,
+    pub status: String, // "pending", "in_progress", "completed"
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +138,28 @@ pub enum UiMode {
     Normal,
     CommandsMenu { selected: usize },
     Popup(PopupState),
+    FileChangesReview {
+        selected_file: usize,
+        view_mode: FileChangesViewMode,
+        scroll_offset: usize,
+    },
+    TodoListReview {
+        selected_item: usize,
+        view_mode: TodoListViewMode,
+        scroll_offset: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum FileChangesViewMode {
+    FileList,
+    UnifiedDiff,
+}
+
+#[derive(Debug, Clone)]
+pub enum TodoListViewMode {
+    ItemList,
+    ItemDetail,
 }
 
 #[derive(Debug, Clone)]
@@ -138,9 +205,11 @@ pub struct UiState {
     pub progress: VecDeque<ProgressEntry>,
     pub active_progress: Option<usize>,
     pub current_model: String,
+    pub current_model_type: Option<crate::domain::ModelType>,
     pub mode: UiMode,
     pub popup_input: Option<PopupInput>,
     pub main_body_scroll: usize,
+    pub main_body_follow: bool,
     pub models: ModelsCache,
     pub settings: SettingsCache,
     pub loading_bar: LoadingBar,
@@ -149,7 +218,10 @@ pub struct UiState {
     pub request_status: Option<RequestStatusDisplay>,
     pub request_progress: Option<String>,
     pub file_changes: Option<FileChangesDisplay>,
+    pub agent_mode: AgentModeType,
+    pub todo_list: Option<TodoListDisplay>,
     pub should_quit: bool,
+    pub attached_images: Vec<AttachedImage>,
 }
 
 impl UiState {
@@ -160,9 +232,11 @@ impl UiState {
             progress: VecDeque::new(),
             active_progress: None,
             current_model: "unknown".to_string(),
+            current_model_type: None,
             mode: UiMode::Normal,
             popup_input: None,
             main_body_scroll: 0,
+            main_body_follow: true,
             models: ModelsCache {
                 status: LoadStatus::Unknown,
                 local: Vec::new(),
@@ -182,7 +256,10 @@ impl UiState {
             request_status: None,
             request_progress: None,
             file_changes: None,
+            agent_mode: AgentModeType::Build, // Default to build mode
+            todo_list: None,
             should_quit: false,
+            attached_images: Vec::new(),
         }
     }
 
@@ -201,7 +278,9 @@ impl UiState {
             }
             self.active_progress = Some(self.progress.len());
         }
-        if self.main_body_scroll > 0 {
+        if self.main_body_follow {
+            self.main_body_scroll = 0;
+        } else if self.main_body_scroll > 0 {
             let added_lines = entry.text.lines().count().max(1);
             self.main_body_scroll = self.main_body_scroll.saturating_add(added_lines);
         }
@@ -214,5 +293,18 @@ impl UiState {
                 self.request_status = None;
             }
         }
+    }
+
+    pub fn clear_input_and_attachments(&mut self) {
+        self.input = TextArea::default();
+        self.attached_images.clear();
+    }
+
+    pub fn can_attach_images(&self) -> bool {
+        // All OpenAI models support vision
+        matches!(
+            self.current_model_type,
+            Some(crate::domain::ModelType::OpenAI)
+        )
     }
 }

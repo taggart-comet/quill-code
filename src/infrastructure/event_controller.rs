@@ -1,23 +1,76 @@
 use crate::domain::permissions::{PermissionConfig, PermissionDecision, PermissionPrompter};
 use crate::domain::{CancellationToken, SessionService, StartupService};
-use crate::infrastructure::app_bus::{
+use crate::infrastructure::db::DbPool;
+use crate::infrastructure::event_bus::{
     AgentToUiEvent, EventBus, PermissionUpdate, RequestStatus, StepPhase, UiToAgentEvent,
 };
 use crate::infrastructure::inference::InferenceEngine;
 use crate::infrastructure::init::{
-    apply_model_selection, get_current_model_name, update_openai_api_key,
+    apply_model_selection, update_openai_api_key,
 };
 use crate::repository::UserSettingsRepository;
 use crate::{domain, infrastructure};
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
-use rusqlite::Connection;
+use r2d2::PooledConnection;
+use r2d2_sqlite::SqliteConnectionManager;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 
-pub struct AppController {
+/// Helper function to send a failure event to the UI
+fn send_failure_event(
+    tx: &Sender<AgentToUiEvent>,
+    request_id: u64,
+    error: impl Into<String>,
+) {
+    let _ = tx.send(AgentToUiEvent::RequestFinishedEvent {
+        request_id,
+        status: RequestStatus::Failure,
+        summary: Some(error.into()),
+        final_message: None,
+    });
+}
+
+/// Macro to send a failure event and continue to the next iteration
+macro_rules! send_failure_and_continue {
+    ($self:expr, $error:expr) => {{
+        send_failure_event(&$self.bus.agent_to_ui_tx, 0, $error);
+        continue;
+    }};
+}
+
+/// Helper function to apply multiple settings updates
+fn apply_settings_updates(
+    conn_guard: &PooledConnection<SqliteConnectionManager>,
+    use_behavior_trees: Option<bool>,
+    openai_tracing_enabled: Option<bool>,
+    web_search_enabled: Option<bool>,
+    brave_api_key: Option<&str>,
+) -> Result<(), String> {
+    let settings_repo = UserSettingsRepository::new(&**conn_guard);
+
+    if let Some(use_behavior_trees) = use_behavior_trees {
+        settings_repo.update_use_behavior_trees(use_behavior_trees)?;
+    }
+
+    if let Some(openai_tracing_enabled) = openai_tracing_enabled {
+        settings_repo.update_openai_tracing_enabled(openai_tracing_enabled)?;
+    }
+
+    if let Some(web_search_enabled) = web_search_enabled {
+        settings_repo.update_web_search_enabled(web_search_enabled)?;
+    }
+
+    if let Some(api_key) = brave_api_key {
+        settings_repo.update_brave_api_key(Some(api_key))?;
+    }
+
+    Ok(())
+}
+
+pub struct EventController {
     bus: EventBus,
-    conn: Arc<Connection>,
+    conn: DbPool,
     engine: Option<Arc<dyn InferenceEngine>>,
     app_name: String,
     use_behavior_trees: bool,
@@ -29,15 +82,19 @@ pub struct AppController {
     request_counter: u64,
 }
 
-impl AppController {
+impl EventController {
     pub fn new(
         bus: EventBus,
-        conn: Arc<Connection>,
+        conn: DbPool,
         engine: Option<Arc<dyn InferenceEngine>>,
         app_name: String,
     ) -> Result<Self, String> {
-        let settings_repo = UserSettingsRepository::new(&conn);
+        let conn_guard = conn
+            .get()
+            .map_err(|e| format!("Failed to get connection: {}", e))?;
+        let settings_repo = UserSettingsRepository::new(&*conn_guard);
         let settings = settings_repo.get_current().map_err(|e| e.to_string())?;
+        drop(conn_guard);
         let use_behavior_trees = settings.use_behavior_trees;
         let openai_tracing_enabled = settings.openai_tracing_enabled;
         let web_search_enabled = settings.web_search_enabled;
@@ -74,49 +131,22 @@ impl AppController {
                     };
 
                     match event {
-                        UiToAgentEvent::RequestEvent { prompt } => {
+                        UiToAgentEvent::RequestEvent { prompt, images, mode } => {
                             if worker_running {
-                                let _ = self
-                                    .bus
-                                    .agent_to_ui_tx
-                                    .send(AgentToUiEvent::RequestFinishedEvent {
-                                        request_id: 0,
-                                        status: RequestStatus::Failure,
-                                        summary: Some("Request already running".to_string()),
-                                        final_message: None,
-                                    });
-                                continue;
+                                send_failure_and_continue!(self, "Request already running");
                             }
 
                             let engine = match self.engine.clone() {
                                 Some(engine) => engine,
                                 None => {
-                                    let _ = self
-                                        .bus
-                                        .agent_to_ui_tx
-                                        .send(AgentToUiEvent::RequestFinishedEvent {
-                                            request_id: 0,
-                                            status: RequestStatus::Failure,
-                                            summary: Some("No model selected".to_string()),
-                                            final_message: None,
-                                        });
-                                    continue;
+                                    send_failure_and_continue!(self, "No model selected");
                                 }
                             };
 
                             let session_id = match self.ensure_session(&engine, &prompt) {
                                 Ok(id) => id,
                                 Err(err) => {
-                                    let _ = self
-                                        .bus
-                                        .agent_to_ui_tx
-                                        .send(AgentToUiEvent::RequestFinishedEvent {
-                                            request_id: 0,
-                                            status: RequestStatus::Failure,
-                                            summary: Some(err),
-                                            final_message: None,
-                                        });
-                                    continue;
+                                    send_failure_and_continue!(self, err);
                                 }
                             };
 
@@ -126,19 +156,22 @@ impl AppController {
                             let request_id = self.request_counter;
                             self.request_counter = self.request_counter.saturating_add(1);
                             let label = request_label(&prompt);
-                            let _ = self
-                                .bus
-                                .agent_to_ui_tx
-                                .send(AgentToUiEvent::RequestStartedEvent { request_id, label });
+                            let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::RequestStartedEvent {
+                                    request_id,
+                                    label,
+                                    prompt: prompt.clone(),
+                                });
 
                             let (permission_response_tx, permission_response_rx) = unbounded();
                             self.permission_response_tx = Some(permission_response_tx);
 
-                            let agent_tx = self.bus.agent_to_ui_tx.clone();
                             let cancel_token = self.cancel_token.clone();
                             let app_name = self.app_name.clone();
                             let use_behavior_trees = self.use_behavior_trees;
                             let worker_status_tx = worker_status_tx.clone();
+
+                            // Convert ImageAttachment to data URLs
+                            let image_data_urls: Vec<String> = images.iter().map(|img| img.data_url.clone()).collect();
 
                             let event_bus = Arc::new(self.bus.clone());
                             thread::spawn(move || {
@@ -148,20 +181,16 @@ impl AppController {
                                     request_id,
                                     session_id,
                                     prompt,
+                                    image_data_urls,
+                                    mode,
                                     use_behavior_trees,
                                     cancel_token,
-                                    &agent_tx,
                                     permission_response_rx,
-                                    event_bus,
+                                    event_bus.clone(),
                                 );
 
                                 if let Err(error) = result {
-                                    let _ = agent_tx.send(AgentToUiEvent::RequestFinishedEvent {
-                                        request_id,
-                                        status: RequestStatus::Failure,
-                                        summary: Some(error),
-                                        final_message: None,
-                                    });
+                                    send_failure_event(&event_bus.agent_to_ui_tx, request_id, error);
                                 }
 
                                 let _ = worker_status_tx.send(());
@@ -191,16 +220,7 @@ impl AppController {
                         } => {
                             if let Some(api_key) = openai_api_key.as_deref() {
                                 if let Err(err) = update_openai_api_key(&self.conn, api_key) {
-                                    let _ = self
-                                        .bus
-                                        .agent_to_ui_tx
-                                        .send(AgentToUiEvent::RequestFinishedEvent {
-                                            request_id: 0,
-                                            status: RequestStatus::Failure,
-                                            summary: Some(err.to_string()),
-                                            final_message: None,
-                                        });
-                                    continue;
+                                    send_failure_and_continue!(self, err.to_string());
                                 }
                             }
 
@@ -211,105 +231,33 @@ impl AppController {
                                         self.current_session_id = None;
                                     }
                                     Err(err) => {
-                                        let _ = self
-                                            .bus
-                                            .agent_to_ui_tx
-                                            .send(AgentToUiEvent::RequestFinishedEvent {
-                                                request_id: 0,
-                                                status: RequestStatus::Failure,
-                                                summary: Some(err.to_string()),
-                                                final_message: None,
-                                            });
-                                        continue;
+                                        send_failure_and_continue!(self, err.to_string());
                                     }
                                 }
                             }
 
-                            if let Some(use_behavior_trees) = use_behavior_trees {
-                                let settings_repo = UserSettingsRepository::new(&self.conn);
-                                if let Err(err) = settings_repo.update_use_behavior_trees(use_behavior_trees) {
-                                    let _ = self
-                                        .bus
-                                        .agent_to_ui_tx
-                                        .send(AgentToUiEvent::RequestFinishedEvent {
-                                            request_id: 0,
-                                            status: RequestStatus::Failure,
-                                            summary: Some(err),
-                                            final_message: None,
-                                        });
-                                    continue;
+                            // Lock connection for settings updates
+                            let conn_guard = match self.conn.get() {
+                                Ok(guard) => guard,
+                                Err(e) => {
+                                    send_failure_and_continue!(self, format!("Failed to get connection: {}", e));
                                 }
+                            };
+
+                            // Apply all settings updates
+                            if let Err(err) = apply_settings_updates(
+                                &conn_guard,
+                                use_behavior_trees,
+                                openai_tracing_enabled,
+                                web_search_enabled,
+                                brave_api_key.as_deref(),
+                            ) {
+                                send_failure_and_continue!(self, err);
                             }
 
-                             if let Some(openai_tracing_enabled) = openai_tracing_enabled {
-                                let settings_repo = UserSettingsRepository::new(&self.conn);
-                                if let Err(err) = settings_repo
-                                    .update_openai_tracing_enabled(openai_tracing_enabled)
-                                {
-                                    let _ = self
-                                        .bus
-                                        .agent_to_ui_tx
-                                        .send(AgentToUiEvent::RequestFinishedEvent {
-                                            request_id: 0,
-                                            status: RequestStatus::Failure,
-                                            summary: Some(err),
-                                            final_message: None,
-                                        });
-                                    continue;
-                                }
-                            }
-
-                            if let Some(web_search_enabled) = web_search_enabled {
-                                let settings_repo = UserSettingsRepository::new(&self.conn);
-                                if let Err(err) = settings_repo.update_web_search_enabled(web_search_enabled) {
-                                    let _ = self
-                                        .bus
-                                        .agent_to_ui_tx
-                                        .send(AgentToUiEvent::RequestFinishedEvent {
-                                            request_id: 0,
-                                            status: RequestStatus::Failure,
-                                            summary: Some(err),
-                                            final_message: None,
-                                        });
-                                    continue;
-                                }
-                            }
-
-                            if let Some(api_key) = brave_api_key.as_deref() {
-                                let settings_repo = UserSettingsRepository::new(&self.conn);
-                                if let Err(err) = settings_repo.update_brave_api_key(Some(api_key)) {
-                                    let _ = self
-                                        .bus
-                                        .agent_to_ui_tx
-                                        .send(AgentToUiEvent::RequestFinishedEvent {
-                                            request_id: 0,
-                                            status: RequestStatus::Failure,
-                                            summary: Some(err),
-                                            final_message: None,
-                                        });
-                                    continue;
-                                }
-                            }
-
-                            let settings_repo = UserSettingsRepository::new(&self.conn);
-                            match settings_repo.get_current() {
-                                Ok(settings) => {
-                                    self.use_behavior_trees = settings.use_behavior_trees;
-                                    self.openai_tracing_enabled = settings.openai_tracing_enabled;
-                                    self.web_search_enabled = settings.web_search_enabled;
-                                }
-                                Err(err) => {
-                                    let _ = self
-                                        .bus
-                                        .agent_to_ui_tx
-                                        .send(AgentToUiEvent::RequestFinishedEvent {
-                                            request_id: 0,
-                                            status: RequestStatus::Failure,
-                                            summary: Some(err),
-                                            final_message: None,
-                                        });
-                                    continue;
-                                }
+                            // Reload settings from database
+                            if let Err(err) = self.reload_settings_from_db(&conn_guard) {
+                                send_failure_and_continue!(self, err);
                             }
 
                             let _ = self.bus.agent_to_ui_tx.send(self.settings_snapshot());
@@ -346,8 +294,20 @@ impl AppController {
     }
 
     fn settings_snapshot(&self) -> AgentToUiEvent {
-        let _ = get_current_model_name(&self.conn);
         AgentToUiEvent::SettingsSnapshot
+    }
+
+    /// Reload settings from database and update internal state
+    fn reload_settings_from_db(
+        &mut self,
+        conn_guard: &PooledConnection<SqliteConnectionManager>,
+    ) -> Result<(), String> {
+        let settings_repo = UserSettingsRepository::new(&**conn_guard);
+        let settings = settings_repo.get_current()?;
+        self.use_behavior_trees = settings.use_behavior_trees;
+        self.openai_tracing_enabled = settings.openai_tracing_enabled;
+        self.web_search_enabled = settings.web_search_enabled;
+        Ok(())
     }
 }
 
@@ -357,9 +317,10 @@ fn run_request_worker(
     request_id: u64,
     session_id: i64,
     prompt: String,
+    images: Vec<String>,
+    mode: crate::domain::AgentModeType, // NEW: Agent mode
     use_behavior_trees: bool,
     cancel_token: CancellationToken,
-    agent_tx: &crossbeam_channel::Sender<AgentToUiEvent>,
     permission_response_rx: Receiver<PermissionUpdate>,
     event_bus: Arc<EventBus>,
 ) -> Result<(), String> {
@@ -367,17 +328,17 @@ fn run_request_worker(
         .map_err(|e| format!("Failed to open worker database: {}", e))?;
 
     let prompter = Arc::new(BusPermissionPrompter::new(
-        agent_tx.clone(),
+        event_bus.agent_to_ui_tx.clone(),
         permission_response_rx,
     ));
 
-    let mut session_service = SessionService::new_with_permissions_and_prompter(
+    let mut session_service = SessionService::new(
         engine.clone(),
         worker_conn.clone(),
         use_behavior_trees,
         PermissionConfig::default(),
         prompter,
-        event_bus.clone()
+        event_bus.agent_to_ui_tx.clone()
     )
     .map_err(|e| format!("Failed to create session service: {}", e))?;
 
@@ -386,24 +347,24 @@ fn run_request_worker(
         .load_session(session_id)
         .map_err(|e| e.to_string())?;
 
-    let result = session_service.run(&session, &prompt, &cancel_token);
+    let result = session_service.run(&session, &prompt, &images, mode, &cancel_token);
     match result {
         Ok(chain) => {
-            emit_chain_progress(agent_tx, &chain);
+            emit_chain_progress(event_bus.agent_to_ui_tx.clone(), &chain);
             if chain.is_failed {
                 let reason = if chain.fail_reason.is_empty() {
                     "Workflow failed".to_string()
                 } else {
                     chain.fail_reason
                 };
-                let _ = agent_tx.send(AgentToUiEvent::RequestFinishedEvent {
+                let _ = event_bus.agent_to_ui_tx.send(AgentToUiEvent::RequestFinishedEvent {
                     request_id,
                     status: RequestStatus::Failure,
                     summary: Some(reason),
                     final_message: None,
                 });
             } else {
-                let _ = agent_tx.send(AgentToUiEvent::RequestFinishedEvent {
+                let _ = event_bus.agent_to_ui_tx.send(AgentToUiEvent::RequestFinishedEvent {
                     request_id,
                     status: RequestStatus::Success,
                     summary: Some(chain.get_summary()),
@@ -413,7 +374,7 @@ fn run_request_worker(
             Ok(())
         }
         Err(domain::session::ServiceError::Workflow(domain::workflow::Error::Cancelled)) => {
-            let _ = agent_tx.send(AgentToUiEvent::RequestFinishedEvent {
+            let _ = event_bus.agent_to_ui_tx.send(AgentToUiEvent::RequestFinishedEvent {
                 request_id,
                 status: RequestStatus::Cancelled,
                 summary: Some("Cancelled".to_string()),
@@ -441,7 +402,7 @@ fn request_label(prompt: &str) -> String {
 }
 
 fn emit_chain_progress(
-    agent_tx: &crossbeam_channel::Sender<AgentToUiEvent>,
+    agent_tx: crossbeam_channel::Sender<AgentToUiEvent>,
     chain: &domain::workflow::Chain,
 ) {
     for step in chain.steps() {
@@ -468,8 +429,8 @@ fn emit_chain_progress(
 mod tests {
     use super::*;
     use crate::domain::permissions::{PermissionDecision, PermissionRequest, PermissionScope};
-    use crate::infrastructure::app_bus::{ModelSelection, UiToAgentEvent};
     use crate::infrastructure::db;
+    use crate::infrastructure::event_bus::{ModelSelection, UiToAgentEvent};
     use crate::repository::{MetaRepository, ModelsRepository, UserSettingsRepository};
     use crossbeam_channel::unbounded;
     use std::sync::{Arc, Mutex};
@@ -489,7 +450,7 @@ mod tests {
         let app_name = unique_app_name();
         let conn = db::init_db(&app_name).expect("init db");
         let bus = EventBus::new();
-        let controller = AppController::new(bus.clone(), conn.clone(), None, app_name.clone())
+        let controller = EventController::new(bus.clone(), conn.clone(), None, app_name.clone())
             .expect("controller");
 
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -518,7 +479,8 @@ mod tests {
         drop(bus);
         let _ = receiver.join();
 
-        let settings_repo = UserSettingsRepository::new(&conn);
+        let conn_guard = conn.get().expect("db conn");
+        let settings_repo = UserSettingsRepository::new(&*conn_guard);
         let stored = settings_repo.get_current().expect("get settings");
         assert!(stored.use_behavior_trees);
 
@@ -538,7 +500,7 @@ mod tests {
         let app_name = unique_app_name();
         let conn = db::init_db(&app_name).expect("init db");
         let bus = EventBus::new();
-        let controller = AppController::new(bus.clone(), conn.clone(), None, app_name.clone())
+        let controller = EventController::new(bus.clone(), conn.clone(), None, app_name.clone())
             .expect("controller");
 
         let agent_rx = bus.agent_to_ui_rx.clone();
@@ -561,11 +523,12 @@ mod tests {
         drop(bus);
         let _ = receiver.join();
 
-        let meta_repo = MetaRepository::new(&conn);
+        let conn_guard = conn.get().expect("db conn");
+        let meta_repo = MetaRepository::new(&*conn_guard);
         let model_id = meta_repo.get_last_used_model_id().expect("model id");
         assert!(model_id.is_some());
 
-        let models_repo = ModelsRepository::new(&conn);
+        let models_repo = ModelsRepository::new(&*conn_guard);
         let models = models_repo
             .find_by_type(crate::domain::ModelType::OpenAI)
             .expect("openai models");
@@ -576,7 +539,7 @@ mod tests {
         let model = model.unwrap();
         assert!(model._api_key.is_none());
 
-        let settings_repo = UserSettingsRepository::new(&conn);
+        let settings_repo = UserSettingsRepository::new(&*conn_guard);
         let settings = settings_repo.get_current().expect("settings");
         assert_eq!(settings.openai_api_key.as_deref(), Some("test-key"));
     }

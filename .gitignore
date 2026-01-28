@@ -4,5 +4,6 @@ crates/*/target
 /.venv
 venv/
 /.claude
+/.cursor
 /models/
 ./models/

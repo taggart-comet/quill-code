@@ -8,7 +8,6 @@ pub use chain::Chain;
 pub use step::ChainStep;
 #[allow(unused_imports)]
 pub use tool_runner::ToolRunner;
-pub use toolset::AllToolset;
 pub use workflow::Workflow;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -62,6 +61,9 @@ pub enum Error {
 
     #[error("cancelled")]
     Cancelled,
+
+    #[error("general error: {0}")]
+    General(String),
 }
 
 impl From<Error> for String {

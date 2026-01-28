@@ -1,6 +1,6 @@
 use crate::infrastructure::cli::components::{
-    bottom_info_panel, commands_menu, file_changes, header_panel, input, loading_bar, main_body,
-    permissions, popup_container, request_indicator, settings_panel,
+    attachment_indicator, bottom_info_panel, commands_menu, header_panel, input, left_half_body,
+    loading_bar, permissions, popup_container, request_indicator, right_half_body, settings_panel,
 };
 use crate::infrastructure::cli::helpers::{
     centered_rect, cursor_position, list_state, panel_block,
@@ -8,7 +8,7 @@ use crate::infrastructure::cli::helpers::{
 use crate::infrastructure::cli::state::{LoadStatus, PopupState, UiMode, UiState};
 use crate::infrastructure::cli::theme::{Theme, PANEL_PADDING};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
@@ -31,7 +31,16 @@ pub fn render(frame: &mut Frame, state: &UiState) {
     let mut input_box_height = (input_lines + 2) as u16;
 
     let indicator_height = 1u16;
-    let fixed_height = header_height + info_height + input_box_height + indicator_height;
+    let attachment_indicator_height = if state.attached_images.is_empty() {
+        0u16
+    } else {
+        1u16
+    };
+    let fixed_height = header_height
+        + info_height
+        + input_box_height
+        + indicator_height
+        + attachment_indicator_height;
     if fixed_height > size.height {
         let overflow = fixed_height - size.height;
         let reduced = input_box_height.saturating_sub(overflow);
@@ -39,38 +48,74 @@ pub fn render(frame: &mut Frame, state: &UiState) {
             reduced.max((crate::infrastructure::cli::state::INPUT_MIN_HEIGHT + 2) as u16);
     }
 
-    let constraints = [
-        Constraint::Length(header_height),
-        Constraint::Min(3),
-        Constraint::Length(indicator_height),
-        Constraint::Length(input_box_height),
-        Constraint::Length(info_height),
-    ];
+    let constraints = if state.attached_images.is_empty() {
+        vec![
+            Constraint::Length(header_height),
+            Constraint::Min(3),
+            Constraint::Length(indicator_height),
+            Constraint::Length(input_box_height),
+            Constraint::Length(info_height),
+        ]
+    } else {
+        vec![
+            Constraint::Length(header_height),
+            Constraint::Min(3),
+            Constraint::Length(indicator_height),
+            Constraint::Length(attachment_indicator_height),
+            Constraint::Length(input_box_height),
+            Constraint::Length(info_height),
+        ]
+    };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(size);
 
-    header_panel::render(frame, chunks[0], state, theme);
-    if state.file_changes.is_some() {
-        let body_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(chunks[1]);
-        main_body::render(frame, body_chunks[0], state, theme);
-        file_changes::render(frame, body_chunks[1], state, theme);
+    if state.attached_images.is_empty() {
+        header_panel::render(frame, chunks[0], state, theme);
+        if state.file_changes.is_some() || state.todo_list.is_some() {
+            let body_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(chunks[1]);
+            left_half_body::render(frame, body_chunks[0], state, theme); // Conversation on left
+            right_half_body::render(frame, body_chunks[1], state, theme); // TODO/changes on right
+        } else {
+            left_half_body::render(frame, chunks[1], state, theme);
+        }
+        request_indicator::render(frame, chunks[2], state, theme);
+        input::render(frame, chunks[3], state, theme);
+        bottom_info_panel::render(frame, chunks[4], state, theme);
     } else {
-        main_body::render(frame, chunks[1], state, theme);
+        header_panel::render(frame, chunks[0], state, theme);
+        if state.file_changes.is_some() || state.todo_list.is_some() {
+            let body_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(chunks[1]);
+            left_half_body::render(frame, body_chunks[0], state, theme); // Conversation on left
+            right_half_body::render(frame, body_chunks[1], state, theme); // TODO/changes on right
+        } else {
+            left_half_body::render(frame, chunks[1], state, theme);
+        }
+        request_indicator::render(frame, chunks[2], state, theme);
+        attachment_indicator::render(frame, chunks[3], state, theme);
+        input::render(frame, chunks[4], state, theme);
+        bottom_info_panel::render(frame, chunks[5], state, theme);
     }
-    request_indicator::render(frame, chunks[2], state, theme);
-    input::render(frame, chunks[3], state, theme);
-    bottom_info_panel::render(frame, chunks[4], state, theme);
 
+    let input_chunk_index = if state.attached_images.is_empty() {
+        3
+    } else {
+        4
+    };
     match &state.mode {
         UiMode::CommandsMenu { selected } => commands_menu::render(frame, size, *selected, theme),
-        UiMode::Popup(popup) => render_popup(frame, size, chunks[3], state, popup, theme),
-        UiMode::Normal => {}
+        UiMode::Popup(popup) => {
+            render_popup(frame, size, chunks[input_chunk_index], state, popup, theme)
+        }
+        UiMode::Normal | UiMode::FileChangesReview { .. } | UiMode::TodoListReview { .. } => {}
     }
 }
 
@@ -356,8 +401,8 @@ fn render_popup(
                 Style::default().fg(theme.info_text),
             )));
             let plan = ListItem::new(Line::from(Span::styled(
-                "Plan (disabled)",
-                Style::default().fg(Color::Rgb(120, 130, 138)),
+                "Plan",
+                Style::default().fg(theme.info_text),
             )));
             let list = List::new(vec![build, plan])
                 .highlight_style(

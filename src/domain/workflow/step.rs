@@ -11,6 +11,10 @@ pub enum StepType {
     UserInterruption,
     /// Signifies that a step in the behavior tree was completed
     BehaviorTreeStepPassed,
+    /// Assistant's text response (reasoning, questions, explanations)
+    AssistantResponse,
+    /// User's message/input
+    UserMessage,
 }
 
 impl StepType {
@@ -19,6 +23,8 @@ impl StepType {
             StepType::ToolCall => "tool_call",
             StepType::UserInterruption => "user_interruption",
             StepType::BehaviorTreeStepPassed => "behavior_tree_step_passed",
+            StepType::AssistantResponse => "assistant_response",
+            StepType::UserMessage => "user_message",
         }
     }
 }
@@ -38,6 +44,8 @@ pub struct ChainStep {
     pub is_successful: Option<bool>,
     #[serde(default)]
     pub file_changes: Option<Vec<FileChange>>,
+    #[serde(default)]
+    pub images: Option<Vec<String>>,
 }
 
 impl ChainStep {
@@ -71,12 +79,60 @@ impl ChainStep {
             tool_output,
             is_successful,
             file_changes,
+            images: None,
+        }
+    }
+
+    /// Create a step for an assistant's text response
+    pub fn assistant_response(summary: String, raw_output: String) -> Self {
+        Self {
+            step_type: StepType::AssistantResponse.as_str().to_string(),
+            summary,
+            context_payload: raw_output.clone(),
+            input_payload: String::new(),
+            tool_name: None,
+            tool_output: Some(raw_output),
+            is_successful: Some(true),
+            file_changes: None,
+            images: None,
+        }
+    }
+
+    /// Create a step for a user's message
+    pub fn user_message(prompt: String, images: Vec<String>) -> Self {
+        let summary = if images.is_empty() {
+            prompt.clone()
+        } else {
+            format!("{} (with {} image(s))", prompt, images.len())
+        };
+
+        let images_opt = if images.is_empty() {
+            None
+        } else {
+            Some(images)
+        };
+
+        Self {
+            step_type: StepType::UserMessage.as_str().to_string(),
+            summary,
+            context_payload: prompt.clone(),
+            input_payload: prompt,
+            tool_name: None,
+            tool_output: None,
+            is_successful: Some(true),
+            file_changes: None,
+            images: images_opt,
         }
     }
 
     pub fn get_output(&self, model_type: ModelType) -> String {
         if self.step_type == StepType::ToolCall.as_str() {
             return prompting::get_tool_result(model_type, self.clone());
+        }
+
+        // Return assistant responses as-is
+        if self.step_type == StepType::AssistantResponse.as_str() {
+            return self.tool_output.clone().unwrap_or_default();
         }
 
         let mut output = format!("Previous step `{}`: {}", self.step_type, self.input_payload);

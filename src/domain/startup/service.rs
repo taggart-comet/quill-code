@@ -2,9 +2,9 @@ use super::Error;
 use crate::domain::prompting::session_naming_prompt;
 use crate::domain::workflow::Chain;
 use crate::domain::{Project, Session, SessionRequest};
+use crate::infrastructure::db::DbPool;
 use crate::infrastructure::inference::InferenceEngine;
 use crate::repository::{ProjectsRepository, SessionRequestsRepository, SessionsRepository};
-use rusqlite::Connection;
 use std::env;
 use std::sync::Arc;
 
@@ -12,12 +12,12 @@ use std::sync::Arc;
 /// This service operates on already-initialized infrastructure components
 pub struct StartupService {
     engine: Arc<dyn InferenceEngine>,
-    conn: Arc<Connection>,
+    conn: DbPool,
 }
 
 impl StartupService {
     /// Create a new startup service with the given configuration
-    pub fn new(engine: Arc<dyn InferenceEngine>, conn: Arc<Connection>) -> Self {
+    pub fn new(engine: Arc<dyn InferenceEngine>, conn: DbPool) -> Self {
         Self { engine, conn }
     }
 
@@ -50,7 +50,12 @@ impl StartupService {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| ".".to_string());
 
-        let repo = ProjectsRepository::new(&self.conn);
+        let conn = self
+            .conn
+            .get()
+            .map_err(|e| Error::Repository(format!("Failed to get connection: {}", e)))?;
+
+        let repo = ProjectsRepository::new(&*conn);
         let (row, created) = repo
             .get_or_create(&project_name, &project_root)
             .map_err(Error::Repository)?;
@@ -78,47 +83,52 @@ impl StartupService {
         let prompt_preview: String = first_prompt.chars().take(100).collect();
         let naming_prompt = session_naming_prompt(self.engine.get_type(), &prompt_preview);
 
-        let system_prompt = crate::domain::prompting::get_system_prompt(self.engine.get_type());
         let chain = Chain::new();
-        let session_name = match self
-            .engine
-            .generate(&system_prompt, &naming_prompt, 15, &[], &chain)
-        {
-            Ok(raw) => {
-                log::debug!("Raw session name response: {:?}", raw.summary);
-                // Clean up the response
-                let cleaned = raw
-                    .summary
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .trim_matches('"')
-                    .trim_matches('*')
-                    .replace("<|im_end|>", "")
-                    .trim()
-                    .to_string();
+        let session_name =
+            match self
+                .engine
+                .generate("", &naming_prompt, 15, &[], &chain, &[], None)
+            {
+                Ok(raw) => {
+                    log::debug!("Raw session name response: {:?}", raw.summary);
+                    // Clean up the response
+                    let cleaned = raw
+                        .summary
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .trim_matches('"')
+                        .trim_matches('*')
+                        .replace("<|im_end|>", "")
+                        .trim()
+                        .to_string();
 
-                if cleaned.is_empty() || cleaned.len() > 50 {
-                    Self::fallback_session_name(first_prompt)
-                } else {
-                    cleaned
+                    if cleaned.is_empty() || cleaned.len() > 50 {
+                        Self::fallback_session_name(first_prompt)
+                    } else {
+                        cleaned
+                    }
                 }
-            }
-            Err(e) => {
-                log::warn!("Session naming failed: {}", e);
-                Self::fallback_session_name(first_prompt)
-            }
-        };
+                Err(e) => {
+                    log::warn!("Session naming failed: {}", e);
+                    Self::fallback_session_name(first_prompt)
+                }
+            };
 
         // Create session in database
-        let sessions_repo = SessionsRepository::new(&self.conn);
+        let conn = self
+            .conn
+            .get()
+            .map_err(|e| Error::Repository(format!("Failed to get connection: {}", e)))?;
+
+        let sessions_repo = SessionsRepository::new(&*conn);
         let row = sessions_repo
             .create(project.id(), &session_name)
             .map_err(Error::Repository)?;
 
         // Increment project session count
-        let projects_repo = ProjectsRepository::new(&self.conn);
+        let projects_repo = ProjectsRepository::new(&*conn);
         projects_repo
             .increment_session_count(project.id())
             .map_err(Error::Repository)?;
@@ -151,14 +161,19 @@ impl StartupService {
 
     /// Load an existing session by ID with all its requests
     pub fn load_session(&self, session_id: i64) -> Result<Session, Error> {
-        let sessions_repo = SessionsRepository::new(&self.conn);
+        let conn = self
+            .conn
+            .get()
+            .map_err(|e| Error::Repository(format!("Failed to get connection: {}", e)))?;
+
+        let sessions_repo = SessionsRepository::new(&*conn);
         let session_row = sessions_repo
             .find_by_id(session_id)
             .map_err(Error::Repository)?
             .ok_or(Error::SessionNotFound(session_id))?;
 
         // Get project entity
-        let projects_repo = ProjectsRepository::new(&self.conn);
+        let projects_repo = ProjectsRepository::new(&*conn);
         let project_row = projects_repo
             .find_by_id(session_row.project_id)
             .map_err(Error::Repository)?
@@ -169,6 +184,8 @@ impl StartupService {
                 ))
             })?;
         let project = Project::from(project_row);
+
+        drop(conn); // Release connection before passing to SessionRequestsRepository
 
         let requests_repo = SessionRequestsRepository::new(self.conn.clone());
         let request_rows = requests_repo
@@ -182,7 +199,6 @@ impl StartupService {
         let session = Session::load_with_requests(session_row, project, requests);
         Ok(session)
     }
-
 }
 
 #[cfg(test)]
@@ -209,5 +225,4 @@ mod tests {
 
         assert_eq!(StartupService::fallback_session_name(""), "New Session");
     }
-
 }

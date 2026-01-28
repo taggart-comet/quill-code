@@ -62,7 +62,6 @@ impl<'a> SessionsRepository<'a> {
 
         Ok(result)
     }
-
 }
 
 fn chrono_now() -> String {

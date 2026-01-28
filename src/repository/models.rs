@@ -108,7 +108,6 @@ impl<'a> ModelsRepository<'a> {
 
         Ok(rows_affected > 0)
     }
-
 }
 
 fn chrono_now() -> String {

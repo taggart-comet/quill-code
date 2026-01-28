@@ -1,40 +1,46 @@
 mod all;
 mod edit;
 mod none;
-mod read;
+mod discover;
 
+use std::collections::HashMap;
+use std::sync::Arc;
+use crossbeam_channel::Sender;
 pub use all::AllToolset;
 pub use edit::EditToolset;
 pub use none::NoneToolset;
-pub use read::ReadToolset;
+pub use discover::DiscoverToolset;
+use crate::infrastructure::db::DbPool;
+use crate::domain::tools::Tool;
+use crate::domain::UserSettings;
+use crate::infrastructure::event_bus::AgentToUiEvent;
+use crate::infrastructure::inference::ToolCall;
+use crate::domain::tools::Error;
+
 #[derive(Clone, Copy)]
 pub enum ToolsetType {
     None,
-    Read,
+    Discover,
     Edit,
     All,
 }
 
 impl ToolsetType {
-    pub fn build(self) -> Box<dyn Toolset> {
-        self.build_with_settings(None)
-    }
-
-    pub fn build_with_settings(
+    pub fn build(
         self,
-        settings: Option<&crate::domain::UserSettings>,
-    ) -> Box<dyn Toolset> {
+        settings: &UserSettings,
+        session_id: i64,
+        conn: DbPool,
+        event_sender: Sender<AgentToUiEvent>,
+    ) -> Arc<dyn Toolset> {
         match self {
-            ToolsetType::Read => Box::new(ReadToolset::new()),
-            ToolsetType::Edit => Box::new(EditToolset::new()),
-            ToolsetType::All => Box::new(AllToolset::new_with_settings(settings)),
-            ToolsetType::None => Box::new(NoneToolset::new()),
+            ToolsetType::Discover => Arc::new(DiscoverToolset::new(session_id, conn, event_sender)),
+            ToolsetType::Edit => Arc::new(EditToolset::new(session_id, conn, event_sender)),
+            ToolsetType::All => Arc::new(AllToolset::new(session_id, settings, conn, event_sender)),
+            ToolsetType::None => Arc::new(NoneToolset::new()),
         }
     }
 }
-
-use crate::domain::tools::Tool;
-use std::collections::HashMap;
 
 /// Trait for toolset implementations that provide a set of tools
 ///
@@ -50,5 +56,20 @@ pub trait Toolset {
     /// Get tool references for passing into inference engines
     fn tool_refs(&self) -> Vec<&dyn Tool> {
         self.tools().values().map(|tool| tool.as_ref()).collect()
+    }
+
+    /// Get a specific tool by name
+    fn prepare_tool(&self, tool_call: &ToolCall) -> Result<&dyn Tool, Error> {
+        let tool = self
+            .tools()
+            .get(&tool_call.name)
+            .map(|t| t.as_ref())
+            .ok_or_else(|| Error::Parse(format!("Tool not found: {}", tool_call.name)))?;
+
+        if let Some(err) = tool.parse_input(tool_call.arguments.clone()) {
+            return Err(err);
+        }
+
+        Ok(tool)
     }
 }

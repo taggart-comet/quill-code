@@ -5,15 +5,16 @@ use super::{
 use crate::domain::bt::GeneralTree;
 use crate::domain::prompting;
 use crate::domain::session::Request;
-use crate::domain::workflow::AllToolset;
-use crate::infrastructure::app_bus::{AgentToUiEvent, StepPhase};
+use crate::infrastructure::db::DbPool;
+use crate::infrastructure::event_bus::{AgentToUiEvent, StepPhase};
 use crate::infrastructure::inference::InferenceEngine;
-use crossbeam_channel::Sender;
 use tokio::runtime::{Builder, Handle};
-
+use crate::domain::workflow::toolset::NoneToolset;
+use crate::domain::workflow::toolset::ToolsetType;
 use openai_agents_tracing::{SpanKind, TracingFacade};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use crossbeam_channel::Sender;
 
 /// Main workflow orchestrator that runs LLM-driven coding tasks
 /// Implements an eternal agent loop that:
@@ -23,12 +24,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// 4. Stores the result in the chain
 /// 5. Repeats until 128 iterations reached
 pub struct Workflow {
-    toolset: Box<dyn Toolset>,
+    toolset: Arc<dyn Toolset>,
     engine: Arc<dyn InferenceEngine>,
     chain: Chain,
     tool_runner: ToolRunner,
     tracer: Option<TracingFacade>,
-    progress_tx: Option<Sender<AgentToUiEvent>>,
+    event_sender: Sender<AgentToUiEvent>,
+    conn: DbPool,
 }
 
 impl Workflow {
@@ -36,15 +38,20 @@ impl Workflow {
     pub fn new(
         engine: Arc<dyn InferenceEngine>,
         permission_checker: Arc<crate::domain::permissions::PermissionChecker>,
-        progress_tx: Option<Sender<AgentToUiEvent>>,
+        event_sender: Sender<AgentToUiEvent>,
+        conn: DbPool,
     ) -> Result<Self, String> {
         Ok(Self {
-            toolset: Box::new(AllToolset::new()),
+            toolset: Arc::new(NoneToolset::new()),
             engine,
             chain: Chain::new(),
-            tool_runner: ToolRunner::new(permission_checker, progress_tx.clone()),
+            tool_runner: ToolRunner::new(
+                permission_checker,
+                event_sender.clone(),
+            ),
             tracer: None,
-            progress_tx,
+            event_sender,
+            conn,
         })
     }
 
@@ -57,13 +64,36 @@ impl Workflow {
         request: &mut dyn Request,
         cancel: &CancellationToken,
         max_tool_calls: usize,
-        user_prompt_override: Option<String>,
+        mode: crate::domain::AgentModeType,
     ) -> Result<(), Error> {
-        self.toolset = Box::new(AllToolset::new_with_settings(request.user_settings()));
-        self._init_tracer(request, "Code Generation Agentic Workflow");
+        // Select toolset based on mode
+        let toolset_type = match mode {
+            crate::domain::AgentModeType::Build => ToolsetType::All,
+            crate::domain::AgentModeType::Plan => ToolsetType::Discover,
+        };
 
+        // Get session_id for tools that need it
+        let session_id = request.session_id().unwrap();
+
+        self.toolset = toolset_type.build(
+            request.user_settings().unwrap(),
+            session_id,
+            self.conn.clone(),
+            self.event_sender.clone(),
+        );
+        self._init_tracer(request, "Code Generation Agentic Workflow");
         self._reset_chain();
-        let result = self._run(request, cancel, max_tool_calls, user_prompt_override);
+        self.chain.add_history(request.get_history_steps());
+        self.chain.set_todo_list(request.get_session_plan());
+
+        // Add current user message as a step
+        let user_step = ChainStep::user_message(
+            request.current_request().to_string(),
+            request.images().to_vec(),
+        );
+        self.chain.steps.push(user_step);
+
+        let result = self._run(request, cancel, max_tool_calls, None);
         self._end_tracing();
         result
     }
@@ -74,8 +104,17 @@ impl Workflow {
         cancel: &CancellationToken,
     ) -> Result<Chain, Error> {
         self._init_tracer(request, "[Behavior Tree] Code Generation Agentic Workflow");
-
         self._reset_chain();
+        self.chain.add_history(request.get_history_steps());
+        self.chain.set_todo_list(request.get_session_plan());
+
+        // Add current user message as a step
+        let user_step = ChainStep::user_message(
+            request.current_request().to_string(),
+            request.images().to_vec(),
+        );
+        self.chain.steps.push(user_step);
+
         let tree = GeneralTree::new();
         let mut current_step = Some(tree.head());
 
@@ -83,7 +122,13 @@ impl Workflow {
             let step_user_prompt =
                 prompting::get_bt_tree_step_prompt(self.engine.get_type(), step, request);
 
-            self.toolset = step.toolset().build_with_settings(request.user_settings());
+            let session_id = request.session_id().unwrap();
+            self.toolset = step.toolset().build(
+                request.user_settings().unwrap(),
+                session_id,
+                self.conn.clone(),
+                self.event_sender.clone(),
+            );
 
             self._run(
                 request,
@@ -100,6 +145,7 @@ impl Workflow {
                 tool_output: None,
                 is_successful: Some(true),
                 file_changes: None,
+                images: None,
             });
             if self.chain.is_failed {
                 self._end_tracing();
@@ -120,8 +166,6 @@ impl Workflow {
         max_tool_calls: usize,
         user_prompt_override: Option<String>,
     ) -> Result<(), Error> {
-        let mut web_search_calls = 0usize;
-
         // Eternal agent loop
         for _iteration in 1..=max_tool_calls {
             // Check for cancellation at the start of each iteration
@@ -131,14 +175,14 @@ impl Workflow {
                 return Ok(());
             }
 
-            let system_prompt = prompting::get_system_prompt(self.engine.get_type());
+            let system_prompt = prompting::get_system_prompt(self.engine.get_type(), request.mode());
             let base_user_prompt = prompting::get_user_prompt(self.engine.get_type(), request);
             let user_prompt = user_prompt_override
                 .as_deref()
                 .unwrap_or(&base_user_prompt)
                 .to_string();
 
-            self.emit_inference_progress();
+            self._emit_inference_progress();
             self._trace_llm_start(user_prompt.clone());
 
             // Ask LLM to choose next tool
@@ -148,6 +192,8 @@ impl Workflow {
                 1024,
                 &self.toolset.tool_refs(),
                 &self.chain,
+                request.images(),
+                self.tracer.as_mut(),
             ) {
                 Ok(output) => output,
                 Err(err) => {
@@ -157,6 +203,14 @@ impl Workflow {
 
             self._trace_llm_end(llm_output.raw_output.clone());
 
+            // Always capture the assistant's response in the chain
+            if !llm_output.raw_output.is_empty() {
+                self.chain.steps.push(ChainStep::assistant_response(
+                    llm_output.summary.clone(),
+                    llm_output.raw_output.clone(),
+                ));
+            }
+
             // Check for cancellation after inference
             if cancel.is_cancelled() {
                 log::info!("Workflow cancelled by user");
@@ -164,34 +218,26 @@ impl Workflow {
                 return Ok(());
             }
 
-            if llm_output.chosen_tool.is_none() {
+            // Exit if there's no tool chosen - means we're done with the request
+            if llm_output.tool_call.is_none() {
                 let final_message = llm_output.summary;
                 self.chain.set_final_message(final_message.clone());
-                request.set_final_message(final_message);
+                request.set_final_message(final_message.clone());
                 self._end_tracing();
+
                 return Ok(());
             }
 
-            let chosen_tool = llm_output.chosen_tool.unwrap();
-
-            let is_web_search = chosen_tool.name() == "web_search";
-            let tool_result = if is_web_search && web_search_calls >= 2 {
-                crate::domain::tools::ToolResult::error(
-                    chosen_tool.name().to_string(),
-                    String::new(),
-                    "Web search call limit exceeded (2 per request)".to_string(),
-                )
-            } else {
-                if is_web_search {
-                    web_search_calls += 1;
-                }
-
-                self.tool_runner
-                    .run(request, chosen_tool.as_ref(), self.tracer.as_mut())
-            };
-
-            // Add step to chain
+            // Fallback for backward compatibility
+            let tool_call = llm_output.tool_call.unwrap();
+            let tool_result = self.tool_runner.run(
+                request,
+                tool_call,
+                self.toolset.as_ref(),
+                self.tracer.as_mut(),
+            );
             self.chain.add_step(tool_result);
+            continue;
         }
 
         if max_tool_calls > 0 {
@@ -244,28 +290,33 @@ impl Workflow {
         }
     }
 
-    fn emit_inference_progress(&self) {
-        let Some(tx) = &self.progress_tx else {
-            return;
-        };
+    fn _emit_inference_progress(&self) {
         let options = [
-            "Thinking.. well kinda.",
-            "Assembling answer.",
-            "Consulting tokens.",
-            "Plotting next step.",
-            "Reasoning quietly.",
-            "Spinning up ideas.",
+            "Thinking.. well kinda..",
+            "Assembling answer..",
+            "Consulting tokens..",
+            "Plotting next step..",
+            "Reasoning quietly..",
+            "Spinning up ideas..",
+            "Okay, now actually thinking..",
+            "Reasoning..",
+            "Looping ideas..",
+            "Brainstorming..",
+            "Predicting next symbols..",
+            "Generating slop..",
         ];
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or(0);
         let index = (nanos % options.len() as u128) as usize;
-        let _ = tx.send(AgentToUiEvent::ProgressEvent {
-            step_name: "inference".to_string(),
-            phase: StepPhase::Before,
-            summary: options[index].to_string(),
-        });
+        let _ = self
+            .event_sender
+            .send(AgentToUiEvent::ProgressEvent {
+                step_name: "inference".to_string(),
+                phase: StepPhase::Before,
+                summary: options[index].to_string(),
+            });
     }
 
     fn _trace_llm_end(&mut self, output: String) {

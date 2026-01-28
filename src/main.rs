@@ -6,7 +6,7 @@ mod config;
 
 use clap::Parser;
 use config::AppConfig;
-use infrastructure::{AppController, EventBus, InfrastructureInitializer};
+use infrastructure::{EventBus, EventController, InfrastructureInitializer};
 use std::fs::OpenOptions;
 
 #[derive(Parser)]
@@ -55,7 +55,7 @@ fn run(config: AppConfig) -> Result<(), String> {
 
     let bus = EventBus::new();
     let app_name = infra.app_name.clone();
-    let controller = AppController::new(
+    let controller = EventController::new(
         bus.clone(),
         infra.connection.clone(),
         infra.engine,

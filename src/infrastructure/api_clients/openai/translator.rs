@@ -27,7 +27,6 @@ pub fn build_request_dto(
         model.to_string(),
         system_prompt.to_string(),
         user_prompt.to_string(),
-        images.to_vec(),
         tools,
         chain,
     );

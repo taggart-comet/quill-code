@@ -28,6 +28,10 @@ pub fn commands_items() -> Vec<CommandsMenuItem> {
             description: "Toggle behavior trees and tracing",
         },
         CommandsMenuItem {
+            label: "Continue",
+            description: "Resume a previous session",
+        },
+        CommandsMenuItem {
             label: "Exit",
             description: "Close the application",
         },

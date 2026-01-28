@@ -197,6 +197,46 @@ pub enum PopupState {
         scope: String,
         selected: usize,
     },
+    ContinueSelect {
+        sessions: Vec<SessionPreview>,
+        selected: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionPreview {
+    pub id: i64,
+    pub name: String,
+    pub created_at: String,
+}
+
+pub fn format_relative_time(epoch_secs: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let delta = now.saturating_sub(epoch_secs);
+    if delta < 60 {
+        return "just now".to_string();
+    }
+    let mins = delta / 60;
+    if mins < 60 {
+        return format!("{} min ago", mins);
+    }
+    let hours = mins / 60;
+    if hours < 24 {
+        return format!("{} hr ago", hours);
+    }
+    let days = hours / 24;
+    if days < 7 {
+        return format!("{} days ago", days);
+    }
+    let weeks = days / 7;
+    if weeks < 5 {
+        return format!("{} weeks ago", weeks);
+    }
+    let months = days / 30;
+    format!("{} months ago", months)
 }
 
 pub struct UiState {
@@ -222,6 +262,7 @@ pub struct UiState {
     pub todo_list: Option<TodoListDisplay>,
     pub should_quit: bool,
     pub attached_images: Vec<AttachedImage>,
+    pub session_id: Option<i64>,
 }
 
 impl UiState {
@@ -260,6 +301,7 @@ impl UiState {
             todo_list: None,
             should_quit: false,
             attached_images: Vec::new(),
+            session_id: None,
         }
     }
 

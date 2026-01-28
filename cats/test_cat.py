@@ -41,6 +41,14 @@ def test_describe():
     assert "neutral" in desc
 
 
+def test_begs_changes_mood():
+    cat = Cat("Nala", 3)
+    result = cat.begs()
+    assert cat.mood == "needy"
+    assert "begs" in result
+    assert "snacks" in result
+
+
 def test_create_cat_helper():
     cat = create_cat("Simba", 2)
     assert isinstance(cat, Cat)
@@ -55,6 +63,7 @@ def run_all_tests() -> None:
         test_pet_when_neutral,
         test_pet_when_happy,
         test_describe,
+        test_begs_changes_mood,
         test_create_cat_helper,
     ]
 

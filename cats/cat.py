@@ -16,6 +16,10 @@ class Cat:
             return f"{self.name} purrs loudly."
         return f"{self.name} tolerates the petting."
 
+    def begs(self) -> str:
+        self.mood = "needy"
+        return f"{self.name} begs for snacks with big, dramatic eyes."
+
     def describe(self) -> str:
         return f"{self.name} is a {self.age} year old cat feeling {self.mood}."
 

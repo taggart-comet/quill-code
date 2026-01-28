@@ -3,6 +3,7 @@ use crate::domain::{Chain, ModelType};
 use crate::domain::prompting::format_todo_list_message;
 use serde::Serialize;
 use serde_json::Value;
+use crate::domain::workflow::step::StepType::{AssistantResponse, ToolCall, UserMessage};
 
 #[derive(Debug, Serialize)]
 pub struct RequestDTO {
@@ -61,6 +62,13 @@ impl InputContent {
             image_url: data_url,
         }
     }
+
+    pub fn function(text: String) -> Self {
+        Self::Text {
+            kind: "function".to_string(),
+            text,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -74,18 +82,21 @@ pub(super) struct ToolDto {
 
 const ROLE_USER: &str = "user";
 const ROLE_SYSTEM: &str = "system";
+const ROLE_ASSISTANT: &str = "assistant";
+const INPUT_STATUS_IN_PROGRESS: &str = "in_progress";
+const INPUT_STATUS_COMPLETED: &str = "completed";
+const INPUT_STATUS_FAILED: &str = "failed";
 
 impl RequestDTO {
     pub(crate) fn new(
         model: String,
         system_prompt: String,
-        _user_prompt: String,
-        _images: Vec<String>,
+        user_prompt: String,
         tools: &[&dyn Tool],
         chain: &crate::domain::workflow::Chain,
     ) -> Self {
         // User request is now part of the chain, no need to add separately
-        let input = InputDto::from_chain(chain);
+        let input = InputDto::build(user_prompt, chain);
 
         Self {
             model,
@@ -113,40 +124,26 @@ impl ToolDto {
 }
 
 impl InputDto {
-    fn from_chain(chain: &Chain) -> Vec<Self> {
+    fn build(user_prompt: String, chain: &Chain) -> Vec<Self> {
         let steps = chain.get_steps_with_history();
-        let num_steps = steps.len();
 
         let mut result: Vec<Self> = steps
             .iter()
             .enumerate()
             .map(|(idx, step)| {
                 // Determine status
-                let is_last_step = idx == num_steps - 1;
-                let is_user_message = step.step_type == "user_message";
+                let is_user_message = step.step_type == UserMessage.as_str();
 
-                let status = if is_last_step && is_user_message {
-                    // Current user message is in progress
-                    "in_progress"
-                } else if step.is_successful.unwrap_or(false) {
-                    "completed"
+                let status = if is_user_message || step.is_successful.unwrap_or(false) {
+                    INPUT_STATUS_COMPLETED
                 } else {
-                    "failed"
+                    INPUT_STATUS_FAILED
                 };
-
-                // Determine role based on step type
-                let role = if step.step_type == "assistant_response" {
-                    "assistant".to_string()
-                } else if is_user_message {
-                    ROLE_USER.to_string()
-                } else {
-                    ROLE_SYSTEM.to_string() // Tool results remain "system"
-                };
+                let mut role = ROLE_ASSISTANT.to_string();
 
                 // Build content items
-                let content_items = if step.step_type == "assistant_response" {
-                    vec![InputContent::output_text(step.get_output(ModelType::OpenAI))]
-                } else if is_user_message {
+                let content_items = if is_user_message {
+                    role = ROLE_USER.to_string();
                     // For user messages, include text and images
                     let mut items = vec![InputContent::text(step.input_payload.clone())];
 
@@ -159,7 +156,7 @@ impl InputDto {
 
                     items
                 } else {
-                    vec![InputContent::text(step.get_output(ModelType::OpenAI))]
+                    vec![InputContent::output_text(step.get_output(ModelType::OpenAI))]
                 };
 
                 Self {
@@ -183,11 +180,19 @@ impl InputDto {
                     content: vec![InputContent::text(todo_message)],
                     role: ROLE_SYSTEM.to_string(),
                     kind: "message".to_string(),
-                    status: "completed".to_string(),
+                    status: INPUT_STATUS_COMPLETED.to_string(),
                 };
                 result.push(todo_input);
             }
         }
+
+        // and adding the current user message at the end
+        result.push(Self {
+            content: vec![InputContent::text(user_prompt)],
+            role: ROLE_USER.to_string(),
+            kind: "message".to_string(),
+            status: INPUT_STATUS_IN_PROGRESS.to_string(),
+        });
 
         result
     }

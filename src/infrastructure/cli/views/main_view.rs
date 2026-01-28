@@ -434,6 +434,58 @@ fn render_popup(
                 theme,
             );
         }
+        PopupState::ContinueSelect { sessions, selected } => {
+            if sessions.is_empty() {
+                return;
+            }
+            let height = (sessions.len() + 4) as u16;
+            let width = min(
+                (size.width as f32 * 0.7) as u16,
+                size.width.saturating_sub(2),
+            );
+            let height = height.min(size.height.saturating_sub(2));
+            let area = centered_rect(size, width, height);
+            frame.render_widget(Clear, area);
+
+            let inner = area.inner(&ratatui::layout::Margin {
+                horizontal: 1,
+                vertical: 1,
+            });
+
+            let sections = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(2), Constraint::Min(1)])
+                .split(inner);
+
+            let title = Paragraph::new(Text::from("Continue Session"))
+                .style(
+                    Style::default()
+                        .fg(theme.info_text)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .alignment(Alignment::Center);
+            frame.render_widget(title, sections[0]);
+
+            let items: Vec<ListItem> = sessions
+                .iter()
+                .map(|s| {
+                    let label = format!("{}  ({})", s.name, s.created_at);
+                    ListItem::new(Line::from(Span::styled(
+                        label,
+                        Style::default().fg(theme.info_text),
+                    )))
+                })
+                .collect();
+            let list = List::new(items)
+                .highlight_style(
+                    Style::default()
+                        .fg(theme.active)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol("> ");
+            let mut list_state = list_state(*selected);
+            frame.render_stateful_widget(list, sections[1], &mut list_state);
+        }
     }
 }
 

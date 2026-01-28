@@ -8,8 +8,8 @@ use crate::infrastructure::cli::helpers::{
     delete_next_char, delete_prev_char, insert_char, next_char_boundary, prev_char_boundary,
 };
 use crate::infrastructure::cli::state::{
-    FileChangesViewMode, LoadStatus, PopupInput, PopupState, TodoListViewMode, UiMode, UiState,
-    MAIN_BODY_SCROLL_STEP,
+    FileChangesViewMode, LoadStatus, PopupInput, PopupState, SessionPreview, TodoListViewMode,
+    UiMode, UiState, MAIN_BODY_SCROLL_STEP,
 };
 use crate::infrastructure::cli::views::main_view::{
     model_entries, openai_available_entries, openai_available_filtered,
@@ -336,7 +336,8 @@ fn handle_commands_key(
             0 => select_openai_model::open_model_popup(conn, state),
             1 => open_mode_popup(state),
             2 => change_settings::open_settings_popup(conn, state),
-            3 => request_exit(bus, state),
+            3 => open_continue_popup(conn, state),
+            4 => request_exit(bus, state),
             _ => state.mode = UiMode::Normal,
         },
         _ => {}
@@ -602,6 +603,31 @@ fn handle_popup_key(
                         _ => PermissionDecision::AlwaysDeny,
                     };
                     submit_permission_decision(bus, popup, decision)?;
+                    state.mode = UiMode::Normal;
+                }
+                _ => {}
+            }
+        }
+        PopupState::ContinueSelect { sessions, selected } => {
+            let count = sessions.len();
+            match key.code {
+                KeyCode::Esc => state.mode = UiMode::Normal,
+                KeyCode::Up => {
+                    if *selected > 0 {
+                        *selected -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    if *selected + 1 < count {
+                        *selected += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    let session_id = sessions[*selected].id;
+                    state.session_id = Some(session_id);
+                    let _ = bus.ui_to_agent_tx.send(UiToAgentEvent::SessionContinueEvent {
+                        session_id,
+                    });
                     state.mode = UiMode::Normal;
                 }
                 _ => {}
@@ -1242,6 +1268,9 @@ fn submit_input(bus: &EventBus, conn: &DbPool, state: &mut UiState) -> Result<()
         ":m" | ":model" | "/m" | "/model" => {
             select_openai_model::open_model_popup(conn, state);
         }
+        "/continue" | "/c" => {
+            open_continue_popup(conn, state);
+        }
         _ => {
             let prompt = value.trim_end().to_string();
 
@@ -1258,7 +1287,8 @@ fn submit_input(bus: &EventBus, conn: &DbPool, state: &mut UiState) -> Result<()
                 .send(UiToAgentEvent::RequestEvent {
                     prompt,
                     images,
-                    mode: state.agent_mode, // Pass current mode
+                    mode: state.agent_mode,
+                    session_id: state.session_id,
                 })
                 .map_err(|e| e.to_string())?;
         }
@@ -1266,6 +1296,79 @@ fn submit_input(bus: &EventBus, conn: &DbPool, state: &mut UiState) -> Result<()
 
     state.clear_input_and_attachments();
     Ok(())
+}
+
+fn open_continue_popup(conn: &DbPool, state: &mut UiState) {
+    let result = (|| -> Result<(), String> {
+        let conn_guard = conn
+            .get()
+            .map_err(|e| format!("Failed to get connection: {}", e))?;
+
+        let project_name = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .unwrap_or_else(|| "default".to_string());
+
+        let projects_repo =
+            crate::repository::ProjectsRepository::new(&*conn_guard);
+        let project = projects_repo
+            .find_by_name(&project_name)?
+            .ok_or_else(|| "not_found".to_string())?;
+
+        let sessions_repo =
+            crate::repository::SessionsRepository::new(&*conn_guard);
+        let rows = sessions_repo.find_by_project_recent(project.id, 5)?;
+
+        if rows.is_empty() {
+            return Err("no_sessions".to_string());
+        }
+
+        let sessions: Vec<SessionPreview> = rows
+            .into_iter()
+            .map(|row| {
+                let epoch: u64 = row.created_at.parse().unwrap_or(0);
+                SessionPreview {
+                    id: row.id,
+                    name: row.name,
+                    created_at: crate::infrastructure::cli::state::format_relative_time(epoch),
+                }
+            })
+            .collect();
+
+        state.mode = UiMode::Popup(PopupState::ContinueSelect {
+            sessions,
+            selected: 0,
+        });
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {}
+        Err(e) if e == "not_found" => {
+            state.push_progress(crate::infrastructure::cli::state::ProgressEntry {
+                text: "No project found for current directory".to_string(),
+                kind: crate::infrastructure::cli::state::ProgressKind::Error,
+                active: false,
+                request_id: None,
+            });
+        }
+        Err(e) if e == "no_sessions" => {
+            state.push_progress(crate::infrastructure::cli::state::ProgressEntry {
+                text: "No previous sessions in this project".to_string(),
+                kind: crate::infrastructure::cli::state::ProgressKind::Info,
+                active: false,
+                request_id: None,
+            });
+        }
+        Err(e) => {
+            state.push_progress(crate::infrastructure::cli::state::ProgressEntry {
+                text: format!("Error loading sessions: {}", e),
+                kind: crate::infrastructure::cli::state::ProgressKind::Error,
+                active: false,
+                request_id: None,
+            });
+        }
+    }
 }
 
 fn open_mode_popup(state: &mut UiState) {

@@ -88,13 +88,6 @@ impl Workflow {
         self.chain.add_history(request.get_history_steps());
         self.chain.set_todo_list(request.get_session_plan());
 
-        // Add current user message as a step
-        let user_step = ChainStep::user_message(
-            request.current_request().to_string(),
-            request.images().to_vec(),
-        );
-        self.chain.steps.push(user_step);
-
         let result = self._run(request, cancel, max_tool_calls, None);
         self._end_tracing();
         result

@@ -131,9 +131,90 @@ impl EventController {
                     };
 
                     match event {
-                        UiToAgentEvent::RequestEvent { prompt, images, mode } => {
+                        UiToAgentEvent::SessionContinueEvent { session_id } => {
                             if worker_running {
                                 send_failure_and_continue!(self, "Request already running");
+                            }
+
+                            self.current_session_id = Some(session_id);
+
+                            let conn_guard = match self.conn.get() {
+                                Ok(guard) => guard,
+                                Err(e) => {
+                                    send_failure_and_continue!(self, format!("Failed to get connection: {}", e));
+                                }
+                            };
+
+                            let sessions_repo = crate::repository::SessionsRepository::new(&*conn_guard);
+                            let session_row = match sessions_repo.find_by_id(session_id) {
+                                Ok(Some(row)) => row,
+                                Ok(None) => {
+                                    send_failure_and_continue!(self, format!("Session {} not found", session_id));
+                                }
+                                Err(e) => {
+                                    send_failure_and_continue!(self, e);
+                                }
+                            };
+
+                            let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::SessionStartedEvent {
+                                title: session_row.name.clone(),
+                            });
+
+                            drop(conn_guard);
+
+                            let requests_repo = crate::repository::SessionRequestsRepository::new(self.conn.clone());
+                            let requests = match requests_repo.find_by_session(session_id) {
+                                Ok(rows) => rows,
+                                Err(e) => {
+                                    send_failure_and_continue!(self, e);
+                                }
+                            };
+
+                            if let Some(last_request) = requests.last() {
+                                let label = request_label(&last_request.prompt);
+                                let status = match &last_request.result_summary {
+                                    Some(summary) if summary.starts_with("Success") => RequestStatus::Success,
+                                    Some(_) => RequestStatus::Failure,
+                                    None => RequestStatus::Failure,
+                                };
+                                let summary = last_request.result_summary.clone();
+
+                                let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::RequestStartedEvent {
+                                    request_id: 0,
+                                    label,
+                                    prompt: last_request.prompt.clone(),
+                                });
+                                let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::RequestFinishedEvent {
+                                    request_id: 0,
+                                    status,
+                                    summary,
+                                    final_message: None,
+                                });
+                            }
+
+                            // Load TODO list if it exists and is not fully completed
+                            let conn_guard2 = match self.conn.get() {
+                                Ok(guard) => guard,
+                                Err(_) => continue,
+                            };
+                            let todo_repo = crate::repository::TodoListRepository::new(&*conn_guard2);
+                            if let Ok(Some(todo_row)) = todo_repo.get_by_session(session_id) {
+                                if let Ok(todo_list) = serde_json::from_str::<domain::todo::TodoList>(&todo_row.content) {
+                                    if !todo_list.items.is_empty() && !todo_list.is_completed() {
+                                        let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::TodoListUpdateEvent {
+                                            items: todo_list.items,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        UiToAgentEvent::RequestEvent { prompt, images, mode, session_id } => {
+                            if worker_running {
+                                send_failure_and_continue!(self, "Request already running");
+                            }
+
+                            if let Some(sid) = session_id {
+                                self.current_session_id = Some(sid);
                             }
 
                             let engine = match self.engine.clone() {

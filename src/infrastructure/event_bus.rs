@@ -46,6 +46,10 @@ pub enum UiToAgentEvent {
         prompt: String,
         images: Vec<ImageAttachment>,
         mode: AgentModeType, // NEW: Pass mode to agent
+        session_id: Option<i64>,
+    },
+    SessionContinueEvent {
+        session_id: i64,
     },
     PermissionUpdateEvent {
         request_id: u64,

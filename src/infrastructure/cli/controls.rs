@@ -210,7 +210,7 @@ fn handle_normal_key(
             }
         }
         KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
-            // Enter right_half_body review mode for whatever is displayed
+            // Enter right_container review mode for whatever is displayed
             let has_file_changes = state.file_changes.is_some()
                 && !state.file_changes.as_ref().unwrap().changes.is_empty();
             let has_todo_list = state.todo_list.is_some()
@@ -234,7 +234,7 @@ fn handle_normal_key(
         }
         KeyCode::BackTab => {
             // BackTab = Shift+Tab on most terminals
-            // Enter right_half_body review mode for whatever is displayed
+            // Enter right_container review mode for whatever is displayed
             let has_file_changes = state.file_changes.is_some()
                 && !state.file_changes.as_ref().unwrap().changes.is_empty();
             let has_todo_list = state.todo_list.is_some()
@@ -257,10 +257,26 @@ fn handle_normal_key(
             return Ok(());
         }
         KeyCode::Tab if !key.modifiers.contains(KeyModifiers::SHIFT) => {
-            // Toggle agent mode between Build and Plan
+            // Toggle agent mode. Plan with a pending TODO list → BuildFromPlan;
+            // BuildFromPlan escapes back to Build.
             state.agent_mode = match state.agent_mode {
                 AgentModeType::Build => AgentModeType::Plan,
-                AgentModeType::Plan => AgentModeType::Build,
+                AgentModeType::Plan => {
+                    let has_pending = state
+                        .todo_list
+                        .as_ref()
+                        .map(|list| {
+                            !list.items.is_empty()
+                                && list.items.iter().any(|item| item.status != "completed")
+                        })
+                        .unwrap_or(false);
+                    if has_pending {
+                        AgentModeType::BuildFromPlan
+                    } else {
+                        AgentModeType::Build
+                    }
+                }
+                AgentModeType::BuildFromPlan => AgentModeType::Build,
             };
         }
         KeyCode::Esc if !state.attached_images.is_empty() => {
@@ -624,6 +640,10 @@ fn handle_file_changes_key(
                     // Return to Normal mode
                     state.mode = UiMode::Normal;
                 }
+                KeyCode::Left => {
+                    // Return to Normal mode
+                    state.mode = UiMode::Normal;
+                }
                 KeyCode::Up => {
                     if *selected_file > 0 {
                         *selected_file -= 1;
@@ -652,7 +672,7 @@ fn handle_file_changes_key(
                 .unwrap_or(0);
 
             match key.code {
-                KeyCode::Esc | KeyCode::Backspace => {
+                KeyCode::Esc | KeyCode::Left => {
                     // Return to FileList view
                     *view_mode = FileChangesViewMode::FileList;
                     *scroll_offset = 0;
@@ -1252,6 +1272,7 @@ fn open_mode_popup(state: &mut UiState) {
     let selected = match state.agent_mode {
         AgentModeType::Build => 0,
         AgentModeType::Plan => 1,
+        AgentModeType::BuildFromPlan => 0,
     };
     state.mode = UiMode::Popup(PopupState::ModeSelect { selected });
 }

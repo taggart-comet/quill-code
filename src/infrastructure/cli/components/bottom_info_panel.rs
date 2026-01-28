@@ -11,6 +11,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &UiState, theme: Theme) {
     let (mode_name, mode_color) = match state.agent_mode {
         AgentModeType::Build => ("BUILD", theme.info_text), // Blue
         AgentModeType::Plan => ("PLAN", Color::LightGreen),
+        AgentModeType::BuildFromPlan => ("BUILD FROM PLAN", Color::LightYellow),
     };
 
     // Determine hint based on current mode

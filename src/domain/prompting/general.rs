@@ -35,6 +35,9 @@ pub fn get_system_prompt(model_type: ModelType, agent_mode: AgentModeType) -> St
     if agent_mode == AgentModeType::Plan {
         return _system_prompt_for_plan(model_type);
     }
+    if agent_mode == AgentModeType::BuildFromPlan {
+        return _system_prompt_for_build_from_plan(model_type);
+    }
     if model_type == ModelType::OpenAI {
         format!(
             "You are Drastis, a coding agent. \n\
@@ -57,9 +60,11 @@ fn _system_prompt_for_plan(model_type: ModelType) -> String {
         format!(
             "You are Drastis, a coding agent. \n\
 You're in the Plan Mode! Use tools to gather all required information to make a detailed plan of what user wants to achieve. \n\
-Ask the user, if there any ambiguities, and clarify what needs to be done if the instructions are not clear. \n\
-When you gathered the information, use the `update_todo_list` tool to create the TODO list and ask the user if he would like to make any changes to the TODO list or is he ready to implement the plan. \n\
-You're writing plan for yourself, so make it prompt-like, you will be executing this plan, once the user confirms it. \n\
+Ask the user, if there're any ambiguities, and clarify what needs to be done if the instructions are not clear. \n\
+When you gathered the information, use the `update_todo_list` tool to create the TODO list and ask the user if he would like to make any changes to the TODO list. \n\
+The user can see the TODO list in the interface once `update_todo_list` tool is used, so don't repeat it it response - respond with a general, summarized approach. \n\
+Do not put into the TODO list the discovery and clarification steps, only the actions that need to be taken once the user confirms the plan. \n\
+You're writing plan for yourself, so make it prompt-like, the end-result while you're in the Plan Mode is a comprehensive TODO list. \n\
 When using tools, pass JSON arguments that match their parameters. \n\
 Runtime: os={}, shell={}.",
             os_name, shell_name
@@ -76,9 +81,35 @@ Runtime: os={}, shell={}.",
     }
 }
 
+fn _system_prompt_for_build_from_plan(model_type: ModelType) -> String {
+    let (os_name, shell_name) = get_runtime_environment();
+    if model_type == ModelType::OpenAI {
+        format!(
+            "You are Drastis, a coding agent executing a TODO list. \n\
+You will receive one TODO item at a time via the user prompt. \n\
+Before starting, mark the item as `in_progress` if it's still `pending`. Accomplish what is described in the current item using available tools, then mark it as `completed` via `update_todo_list` (preserve other items' statuses). \n\
+After marking an item complete, continue working on the next pending item without stopping. \n\
+When all items are done, stop without calling any more tools - just tell the user that you're done, and if you encountered any detours from the original plan. \n\
+When using tools, pass JSON arguments that match their parameters. \n\
+Runtime: os={}, shell={}.",
+            os_name, shell_name
+        )
+    } else {
+        format!(
+            "You are Drastis, a coding agent executing a TODO list. \n\
+You will receive one TODO item at a time via the user prompt. \n\
+Complete the current item using available tools, then mark it as `completed` via `update_todo_list` (preserve other items' statuses). \n\
+After marking an item complete, continue working on the next pending item without stopping. \n\
+When all items are done, stop without calling any more tools. \n\
+Runtime: os={}, shell={}.",
+            os_name, shell_name
+        )
+    }
+}
+
 pub fn format_todo_list_message(todo_content: &str) -> String {
     format!(
-        "## Current Session TODO List\n\nBelow is the current plan/TODO list for this session:\n\n```json\n{}\n```\n\nMake sure to update the TODO list as you make progress.",
+        "## Current Session TODO List\n\nBelow is the current plan/TODO list for this session:\n\n```json\n{}\n```\n",
         todo_content
     )
 }

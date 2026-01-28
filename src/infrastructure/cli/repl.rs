@@ -1,4 +1,4 @@
-use crate::domain::ModelType;
+use crate::domain::{AgentModeType, ModelType};
 use crate::infrastructure::cli::state::{
     FileChangesDisplay, LoadStatus, PopupState, ProgressEntry, ProgressKind, RequestIndicator,
     RequestStatusDisplay, UiMode, UiState,
@@ -240,6 +240,21 @@ fn handle_agent_event(
                             request_id: None,
                         });
                     }
+                }
+            }
+
+            // Revert BuildFromPlan → Build when all TODO items are completed
+            if state.agent_mode == AgentModeType::BuildFromPlan {
+                let all_done = state
+                    .todo_list
+                    .as_ref()
+                    .map(|list| {
+                        !list.items.is_empty()
+                            && list.items.iter().all(|item| item.status == "completed")
+                    })
+                    .unwrap_or(true);
+                if all_done {
+                    state.agent_mode = AgentModeType::Build;
                 }
             }
         }

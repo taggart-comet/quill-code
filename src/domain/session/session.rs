@@ -130,6 +130,12 @@ impl Request for Session {
     fn get_history_steps(&self) -> Vec<crate::domain::workflow::step::ChainStep> {
         use crate::repository::SessionRequestStepsRepository;
 
+        // BuildFromPlan keeps context minimal — TODO list (with statuses) is
+        // already included as a system message by the chain's todo_list field.
+        if self.current_mode == AgentModeType::BuildFromPlan {
+            return Vec::new();
+        }
+
         // Return empty if no connection available
         let conn = match &self.conn {
             Some(c) => c.clone(),

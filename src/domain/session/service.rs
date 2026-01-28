@@ -8,7 +8,7 @@ use crate::infrastructure::AgentToUiEvent;
 use crate::infrastructure::InferenceEngine;
 use crate::repository::{
     ModelsRepository, SessionRequestStepsRepository, SessionRequestsRepository,
-    UserSettingsRepository,
+    TodoListRepository, UserSettingsRepository,
 };
 use crossbeam_channel::Sender;
 use std::sync::Arc;
@@ -86,10 +86,37 @@ impl SessionService {
         let request_settings =
             UserSettings::from(settings_row.clone()).with_current_model_name(model_name);
 
+        // Safeguard: if BuildFromPlan is requested but no valid TODO list exists,
+        // fall back to Build mode to avoid a broken state.
+        let effective_mode = if mode == crate::domain::AgentModeType::BuildFromPlan {
+            let has_pending = {
+                let conn = self.conn.get().map_err(|e| {
+                    ServiceError::Repository(format!("Failed to get database connection: {}", e))
+                })?;
+                let repo = TodoListRepository::new(&*conn);
+                match repo.get_by_session(session.id()) {
+                    Ok(Some(row)) => {
+                        match serde_json::from_str::<crate::domain::todo::TodoList>(&row.content) {
+                            Ok(todo_list) => !todo_list.is_completed() && !todo_list.items.is_empty(),
+                            Err(_) => false,
+                        }
+                    }
+                    _ => false,
+                }
+            };
+            if has_pending {
+                crate::domain::AgentModeType::BuildFromPlan
+            } else {
+                crate::domain::AgentModeType::Build
+            }
+        } else {
+            mode
+        };
+
         // Create a new session request
         let requests_repo = SessionRequestsRepository::new(self.conn.clone());
         let request_row = requests_repo
-            .create(session.id(), settings_row.id, prompt, mode)
+            .create(session.id(), settings_row.id, prompt, effective_mode)
             .map_err(|e| ServiceError::Repository(e))?;
         let request_id = request_row.id;
 
@@ -101,7 +128,7 @@ impl SessionService {
         session_with_request.set_current_request(prompt.to_string());
         session_with_request.set_current_images(images.to_vec());
         session_with_request.set_current_user_settings(Some(request_settings));
-        session_with_request.set_current_mode(mode);
+        session_with_request.set_current_mode(effective_mode);
         session_with_request.set_conn(self.conn.clone());
 
         // Run the workflow
@@ -110,7 +137,7 @@ impl SessionService {
                 .run_using_bt(&mut session_with_request, cancel)
         } else {
             self.workflow
-                .run(&mut session_with_request, cancel, 128, mode)
+                .run(&mut session_with_request, cancel, 128, effective_mode)
                 .map_err(ServiceError::Workflow)?;
             Ok(self.workflow.get_chain().clone())
         };

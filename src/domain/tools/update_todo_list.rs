@@ -142,8 +142,9 @@ impl Tool for UpdateTodoList {
     }
 
     fn desc(&self) -> String {
-        "Updates the TODO list for the current session. \
-         Use this in Plan mode to create or update TODO items after exploring the codebase. For every use, provide full TODO list, as it will replace the existing list."
+"Use this in Plan mode to create or update TODO items after exploring the codebase. For every use, provide full TODO list, as it will replace the existing list.\n\
+If you're not in Plan mode, only update statuses of TODO items as you finish them.
+"
             .to_string()
     }
 

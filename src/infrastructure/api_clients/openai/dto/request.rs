@@ -183,7 +183,7 @@ impl InputDto {
                     content: vec![InputContent::text(todo_message)],
                     role: ROLE_SYSTEM.to_string(),
                     kind: "message".to_string(),
-                    status: "in_progress".to_string(),
+                    status: "completed".to_string(),
                 };
                 result.push(todo_input);
             }

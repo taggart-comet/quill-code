@@ -1,6 +1,6 @@
 use crate::infrastructure::cli::components::{
-    attachment_indicator, bottom_info_panel, commands_menu, header_panel, input, left_half_body,
-    loading_bar, permissions, popup_container, request_indicator, right_half_body, settings_panel,
+    attachment_indicator, bottom_info_panel, commands_menu, header_panel, input, left_container,
+    loading_bar, permissions, popup_container, request_indicator, right_container, settings_panel,
 };
 use crate::infrastructure::cli::helpers::{
     centered_rect, cursor_position, list_state, panel_block,
@@ -79,10 +79,10 @@ pub fn render(frame: &mut Frame, state: &UiState) {
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(chunks[1]);
-            left_half_body::render(frame, body_chunks[0], state, theme); // Conversation on left
-            right_half_body::render(frame, body_chunks[1], state, theme); // TODO/changes on right
+            left_container::render(frame, body_chunks[0], state, theme); // Conversation on left
+            right_container::render(frame, body_chunks[1], state, theme); // TODO/changes on right
         } else {
-            left_half_body::render(frame, chunks[1], state, theme);
+            left_container::render(frame, chunks[1], state, theme);
         }
         request_indicator::render(frame, chunks[2], state, theme);
         input::render(frame, chunks[3], state, theme);
@@ -94,10 +94,10 @@ pub fn render(frame: &mut Frame, state: &UiState) {
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(chunks[1]);
-            left_half_body::render(frame, body_chunks[0], state, theme); // Conversation on left
-            right_half_body::render(frame, body_chunks[1], state, theme); // TODO/changes on right
+            left_container::render(frame, body_chunks[0], state, theme); // Conversation on left
+            right_container::render(frame, body_chunks[1], state, theme); // TODO/changes on right
         } else {
-            left_half_body::render(frame, chunks[1], state, theme);
+            left_container::render(frame, chunks[1], state, theme);
         }
         request_indicator::render(frame, chunks[2], state, theme);
         attachment_indicator::render(frame, chunks[3], state, theme);

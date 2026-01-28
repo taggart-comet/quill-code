@@ -15,6 +15,7 @@ use openai_agents_tracing::{SpanKind, TracingFacade};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use crossbeam_channel::Sender;
+use crate::domain::AgentModeType;
 
 /// Main workflow orchestrator that runs LLM-driven coding tasks
 /// Implements an eternal agent loop that:
@@ -64,12 +65,13 @@ impl Workflow {
         request: &mut dyn Request,
         cancel: &CancellationToken,
         max_tool_calls: usize,
-        mode: crate::domain::AgentModeType,
+        mode: AgentModeType,
     ) -> Result<(), Error> {
         // Select toolset based on mode
         let toolset_type = match mode {
-            crate::domain::AgentModeType::Build => ToolsetType::All,
-            crate::domain::AgentModeType::Plan => ToolsetType::Discover,
+            AgentModeType::Build => ToolsetType::All,
+            AgentModeType::Plan => ToolsetType::Discover,
+            AgentModeType::BuildFromPlan => ToolsetType::All,
         };
 
         // Get session_id for tools that need it

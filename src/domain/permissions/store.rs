@@ -12,22 +12,12 @@ pub enum StoreError {
 
 pub trait PermissionStore {
     fn create_permission(&self, permission: Permission) -> Result<Permission, StoreError>;
-    fn find_tool_permission(
+    fn find_permission(
         &self,
         tool: &str,
-        project_id: Option<i32>,
-    ) -> Result<Option<Permission>, StoreError>;
-    fn find_command_permission(
-        &self,
-        tool: &str,
-        command: &str,
-        project_id: Option<i32>,
-    ) -> Result<Option<Permission>, StoreError>;
-    fn find_path_permission(
-        &self,
-        tool: &str,
-        path: &PathBuf,
-        project_id: Option<i32>,
+        project_id: i32,
+        command_pattern: &str,
+        resource_pattern: &str,
     ) -> Result<Option<Permission>, StoreError>;
 }
 
@@ -122,24 +112,35 @@ impl PermissionStore for SqlitePermissionStore {
         Ok(created)
     }
 
-    fn find_tool_permission(
+    fn find_permission(
         &self,
         tool: &str,
-        project_id: Option<i32>,
+        project_id: i32,
+        command_pattern: &str,
+        resource_pattern: &str,
     ) -> Result<Option<Permission>, StoreError> {
-        let query = if project_id.is_some() {
-            "SELECT id, tool_name, command_pattern, resource_pattern, decision, scope,
-                    project_id, created_at
-             FROM permissions
-             WHERE tool_name = ?1 AND (project_id = ?2 OR project_id IS NULL OR scope = 'global')
-             ORDER BY scope DESC, project_id DESC LIMIT 1"
+        // Build query dynamically to handle NULL values properly
+        // In SQL, NULL != '', so we need to use IS NULL for empty strings
+        let command_clause = if command_pattern.is_empty() {
+            "command_pattern IS NULL"
         } else {
-            "SELECT id, tool_name, command_pattern, resource_pattern, decision, scope,
-                    project_id, created_at
-             FROM permissions
-             WHERE tool_name = ?1 AND (project_id IS NULL OR scope = 'global')
-             ORDER BY scope DESC LIMIT 1"
+            "command_pattern = ?3"
         };
+
+        let resource_clause = if resource_pattern.is_empty() {
+            "resource_pattern IS NULL"
+        } else {
+            "resource_pattern = ?4"
+        };
+
+        let query = format!(
+            "SELECT id, tool_name, command_pattern, resource_pattern, decision, scope,
+            project_id, created_at
+            FROM permissions
+            WHERE project_id = ?1 AND tool_name = ?2 AND {} AND {}
+            ORDER BY scope DESC LIMIT 1",
+            command_clause, resource_clause
+        );
 
         let conn = self.conn.get().map_err(|e| {
             StoreError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(
@@ -150,104 +151,38 @@ impl PermissionStore for SqlitePermissionStore {
             )))
         })?;
 
-        let mut stmt = conn.prepare(query)?;
-        if let Some(pid) = project_id {
-            let mut rows = stmt.query_map(params![tool, pid], |row| self.row_to_permission(row))?;
-            return match rows.next() {
-                Some(Ok(permission)) => Ok(Some(permission)),
-                Some(Err(e)) => Err(StoreError::Database(e)),
-                None => Ok(None),
-            };
-        }
-
-        let mut rows = stmt.query_map(params![tool], |row| self.row_to_permission(row))?;
-        match rows.next() {
-            Some(Ok(permission)) => Ok(Some(permission)),
-            Some(Err(e)) => Err(StoreError::Database(e)),
-            None => Ok(None),
-        }
-    }
-
-    fn find_command_permission(
-        &self,
-        tool: &str,
-        command: &str,
-        project_id: Option<i32>,
-    ) -> Result<Option<Permission>, StoreError> {
-        let query = if project_id.is_some() {
-            "SELECT id, tool_name, command_pattern, resource_pattern, decision, scope,
-                    project_id, created_at
-             FROM permissions
-             WHERE tool_name = ?1 AND command_pattern IS NOT NULL
-             AND (project_id = ?2 OR project_id IS NULL OR scope = 'global')
-             ORDER BY scope DESC, project_id DESC"
+        // Build params based on whether patterns are empty
+        let result = if command_pattern.is_empty() && resource_pattern.is_empty() {
+            conn.query_row(
+                &query,
+                params![project_id, tool],
+                |row| self.row_to_permission(row),
+            )
+        } else if command_pattern.is_empty() {
+            conn.query_row(
+                &query,
+                params![project_id, tool, resource_pattern],
+                |row| self.row_to_permission(row),
+            )
+        } else if resource_pattern.is_empty() {
+            conn.query_row(
+                &query,
+                params![project_id, tool, command_pattern],
+                |row| self.row_to_permission(row),
+            )
         } else {
-            "SELECT id, tool_name, command_pattern, resource_pattern, decision, scope,
-                    project_id, created_at
-             FROM permissions
-             WHERE tool_name = ?1 AND command_pattern IS NOT NULL
-             AND (project_id IS NULL OR scope = 'global')
-             ORDER BY scope DESC"
+            conn.query_row(
+                &query,
+                params![project_id, tool, command_pattern, resource_pattern],
+                |row| self.row_to_permission(row),
+            )
         };
 
-        let conn = self.conn.get().map_err(|e| {
-            StoreError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("Failed to get connection: {}", e),
-                ),
-            )))
-        })?;
-
-        let mut stmt = conn.prepare(query)?;
-        if let Some(pid) = project_id {
-            let rows = stmt.query_map(params![tool, pid], |row| self.row_to_permission(row))?;
-            return self.find_matching_command_permission(rows, tool, command);
+        match result {
+            Ok(permission) => Ok(Some(permission)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(StoreError::Database(e)),
         }
-
-        let rows = stmt.query_map(params![tool], |row| self.row_to_permission(row))?;
-        self.find_matching_command_permission(rows, tool, command)
-    }
-
-    fn find_path_permission(
-        &self,
-        tool: &str,
-        path: &PathBuf,
-        project_id: Option<i32>,
-    ) -> Result<Option<Permission>, StoreError> {
-        let query = if project_id.is_some() {
-            "SELECT id, tool_name, command_pattern, resource_pattern, decision, scope,
-                    project_id, created_at
-             FROM permissions
-              WHERE tool_name = ?1 AND resource_pattern IS NOT NULL
-             AND (project_id = ?2 OR project_id IS NULL OR scope = 'global')
-             ORDER BY scope DESC, project_id DESC"
-        } else {
-            "SELECT id, tool_name, command_pattern, resource_pattern, decision, scope,
-                    project_id, created_at
-             FROM permissions
-              WHERE tool_name = ?1 AND resource_pattern IS NOT NULL
-             AND (project_id IS NULL OR scope = 'global')
-             ORDER BY scope DESC"
-        };
-
-        let conn = self.conn.get().map_err(|e| {
-            StoreError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("Failed to get connection: {}", e),
-                ),
-            )))
-        })?;
-
-        let mut stmt = conn.prepare(query)?;
-        if let Some(pid) = project_id {
-            let rows = stmt.query_map(params![tool, pid], |row| self.row_to_permission(row))?;
-            return self.find_matching_path_permission(rows, tool, path);
-        }
-
-        let rows = stmt.query_map(params![tool], |row| self.row_to_permission(row))?;
-        self.find_matching_path_permission(rows, tool, path)
     }
 }
 

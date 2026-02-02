@@ -10,6 +10,7 @@ pub fn open_settings_popup(conn: &DbPool, state: &mut UiState) {
         behavior_trees: state.settings.use_behavior_trees,
         openai_tracing: state.settings.openai_tracing_enabled,
         web_search: state.settings.web_search_enabled,
+        max_tool_calls: state.settings.max_tool_calls_per_request,
     });
 }
 
@@ -20,8 +21,9 @@ pub fn submit_settings(
     behavior_trees: bool,
     openai_tracing: bool,
     web_search: bool,
+    max_tool_calls: i32,
 ) -> Result<(), String> {
-    apply_settings(bus, conn, state, behavior_trees, openai_tracing, web_search)?;
+    apply_settings(bus, conn, state, behavior_trees, openai_tracing, web_search, max_tool_calls)?;
     state.mode = UiMode::Normal;
     Ok(())
 }
@@ -33,8 +35,9 @@ pub fn apply_settings(
     behavior_trees: bool,
     openai_tracing: bool,
     web_search: bool,
+    max_tool_calls: i32,
 ) -> Result<(), String> {
-    update_settings_in_db(conn, behavior_trees, openai_tracing, web_search)?;
+    update_settings_in_db(conn, behavior_trees, openai_tracing, web_search, max_tool_calls)?;
     let _ = bus
         .ui_to_agent_tx
         .send(UiToAgentEvent::SettingsUpdateEvent {
@@ -43,6 +46,7 @@ pub fn apply_settings(
             use_behavior_trees: Some(behavior_trees),
             openai_tracing_enabled: Some(openai_tracing),
             web_search_enabled: Some(web_search),
+            max_tool_calls_per_request: Some(max_tool_calls),
             brave_api_key: None,
         });
     refresh_settings_from_db(conn, state)?;
@@ -56,9 +60,10 @@ pub fn submit_brave_api_key(
     behavior_trees: bool,
     openai_tracing: bool,
     web_search_enabled: bool,
+    max_tool_calls: i32,
     api_key: String,
 ) -> Result<(), String> {
-    update_settings_in_db(conn, behavior_trees, openai_tracing, web_search_enabled)?;
+    update_settings_in_db(conn, behavior_trees, openai_tracing, web_search_enabled, max_tool_calls)?;
     let _ = bus
         .ui_to_agent_tx
         .send(UiToAgentEvent::SettingsUpdateEvent {
@@ -67,6 +72,7 @@ pub fn submit_brave_api_key(
             use_behavior_trees: Some(behavior_trees),
             openai_tracing_enabled: Some(openai_tracing),
             web_search_enabled: Some(web_search_enabled),
+            max_tool_calls_per_request: Some(max_tool_calls),
             brave_api_key: Some(api_key),
         });
     refresh_settings_from_db(conn, state)?;

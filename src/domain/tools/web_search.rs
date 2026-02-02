@@ -352,35 +352,43 @@ mod tests {
             Ok(permission)
         }
 
-        fn find_tool_permission(
+        fn find_permission(
             &self,
             tool: &str,
-            _project_id: Option<i32>,
+            project_id: i32,
+            command_pattern: &str,
+            resource_pattern: &str,
         ) -> Result<Option<crate::domain::permissions::types::Permission>, StoreError> {
             let permission = self.tool_permission.lock().unwrap().clone();
             if let Some(permission) = permission {
-                if permission.matches(tool, None, None::<&PathBuf>) {
+                // Check if project_id matches
+                if let Some(perm_project_id) = permission.project_id {
+                    if perm_project_id != project_id {
+                        return Ok(None);
+                    }
+                }
+
+                // Check if tool matches
+                if permission.tool_name != tool {
+                    return Ok(None);
+                }
+
+                // Check command pattern match
+                let command_matches = match &permission.command_pattern {
+                    Some(pattern) => pattern == command_pattern,
+                    None => command_pattern.is_empty(),
+                };
+
+                // Check resource pattern match
+                let resource_matches = match &permission.resource_pattern {
+                    Some(pattern) => pattern == resource_pattern,
+                    None => resource_pattern.is_empty(),
+                };
+
+                if command_matches && resource_matches {
                     return Ok(Some(permission));
                 }
             }
-            Ok(None)
-        }
-
-        fn find_command_permission(
-            &self,
-            _tool: &str,
-            _command: &str,
-            _project_id: Option<i32>,
-        ) -> Result<Option<crate::domain::permissions::types::Permission>, StoreError> {
-            Ok(None)
-        }
-
-        fn find_path_permission(
-            &self,
-            _tool: &str,
-            _path: &PathBuf,
-            _project_id: Option<i32>,
-        ) -> Result<Option<crate::domain::permissions::types::Permission>, StoreError> {
             Ok(None)
         }
     }
@@ -461,6 +469,7 @@ mod tests {
             current_model_id: None,
             web_search_enabled,
             brave_api_key: brave_api_key.map(String::from),
+            max_tool_calls_per_request: 10,
         };
         UserSettings::from(row)
     }

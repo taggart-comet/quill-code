@@ -2,10 +2,8 @@ mod domain;
 mod infrastructure;
 mod repository;
 mod utils;
-mod config;
 
 use clap::Parser;
-use config::AppConfig;
 use infrastructure::{EventBus, EventController, InfrastructureInitializer};
 use std::fs::OpenOptions;
 
@@ -19,18 +17,17 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    let config = AppConfig::new(args.debug);
 
-    if let Err(e) = run(config) {
+    if let Err(e) = run(args.debug) {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }
 }
 
-fn run(config: AppConfig) -> Result<(), String> {
+fn run(debug: bool) -> Result<(), String> {
     {
         let mut builder = env_logger::Builder::from_default_env();
-        if config.debug {
+        if debug {
             builder.filter_level(log::LevelFilter::Debug);
         } else {
             builder.filter_level(log::LevelFilter::Info);
@@ -50,7 +47,7 @@ fn run(config: AppConfig) -> Result<(), String> {
         builder.init();
     }
 
-    let infrastructure_initializer = InfrastructureInitializer::with_debug(config.debug);
+    let infrastructure_initializer = InfrastructureInitializer::with_debug(debug);
     let infra = infrastructure_initializer.initialize()?;
 
     let bus = EventBus::new();

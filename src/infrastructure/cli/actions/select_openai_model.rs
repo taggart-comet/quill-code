@@ -29,6 +29,7 @@ pub fn handle_model_entry(
                     use_behavior_trees: None,
                     openai_tracing_enabled: None,
                     web_search_enabled: None,
+                    max_tool_calls_per_request: None,
                     brave_api_key: None,
                 });
             refresh_settings_from_db(conn, state)?;
@@ -44,6 +45,7 @@ pub fn handle_model_entry(
                     use_behavior_trees: None,
                     openai_tracing_enabled: None,
                     web_search_enabled: None,
+                    max_tool_calls_per_request: None,
                     brave_api_key: None,
                 });
             refresh_settings_from_db(conn, state)?;
@@ -83,6 +85,7 @@ pub fn handle_openai_available_selection(
             use_behavior_trees: None,
             openai_tracing_enabled: None,
             web_search_enabled: None,
+            max_tool_calls_per_request: None,
             brave_api_key: None,
         });
     refresh_settings_from_db(conn, state)?;

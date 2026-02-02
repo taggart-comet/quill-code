@@ -9,6 +9,7 @@ pub struct UserSettingsRow {
     pub current_model_id: Option<i64>,
     pub web_search_enabled: bool,
     pub brave_api_key: Option<String>,
+    pub max_tool_calls_per_request: i32,
 }
 
 impl UserSettingsRow {
@@ -21,6 +22,7 @@ impl UserSettingsRow {
             current_model_id: row.get(4)?,
             web_search_enabled: row.get::<_, i64>(5)? != 0,
             brave_api_key: row.get(6)?,
+            max_tool_calls_per_request: row.get(7)?,
         })
     }
 }
@@ -44,7 +46,7 @@ impl<'a> UserSettingsRepository<'a> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, openai_api_key, openai_tracing_enabled, use_behavior_trees, current_model_id, web_search_enabled, brave_api_key FROM user_settings WHERE id = ?",
+                "SELECT id, openai_api_key, openai_tracing_enabled, use_behavior_trees, current_model_id, web_search_enabled, brave_api_key, max_tool_calls_per_request FROM user_settings WHERE id = ?",
             )
             .map_err(|e| e.to_string())?;
 
@@ -101,6 +103,17 @@ impl<'a> UserSettingsRepository<'a> {
         Ok(())
     }
 
+    pub fn update_max_tool_calls_per_request(&self, value: i32) -> Result<(), String> {
+        self.ensure_row()?;
+        self.conn
+            .execute(
+                "UPDATE user_settings SET max_tool_calls_per_request = ? WHERE id = 1",
+                params![value],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     fn update_bool(&self, column: &str, enabled: bool) -> Result<(), String> {
         self.ensure_row()?;
         let sql = format!("UPDATE user_settings SET {} = ? WHERE id = 1", column);
@@ -113,7 +126,7 @@ impl<'a> UserSettingsRepository<'a> {
     fn ensure_row(&self) -> Result<(), String> {
         self.conn
             .execute(
-                "INSERT OR IGNORE INTO user_settings (id, openai_tracing_enabled, use_behavior_trees, web_search_enabled) VALUES (1, 0, 0, 0)",
+                "INSERT OR IGNORE INTO user_settings (id, openai_tracing_enabled, use_behavior_trees, web_search_enabled, max_tool_calls_per_request) VALUES (1, 0, 0, 0, 50)",
                 [],
             )
             .map_err(|e| e.to_string())?;

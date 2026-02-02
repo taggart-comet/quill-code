@@ -252,6 +252,7 @@ fn render_popup(
             behavior_trees,
             openai_tracing,
             web_search,
+            max_tool_calls,
         } => {
             let height = 10u16.min(size.height.saturating_sub(2));
             if height == 0 {
@@ -270,6 +271,7 @@ fn render_popup(
                 *behavior_trees,
                 *openai_tracing,
                 *web_search,
+                *max_tool_calls,
                 theme,
             );
         }

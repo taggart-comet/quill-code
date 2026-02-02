@@ -45,6 +45,7 @@ fn apply_settings_updates(
     use_behavior_trees: Option<bool>,
     openai_tracing_enabled: Option<bool>,
     web_search_enabled: Option<bool>,
+    max_tool_calls_per_request: Option<i32>,
     brave_api_key: Option<&str>,
 ) -> Result<(), String> {
     let settings_repo = UserSettingsRepository::new(&**conn_guard);
@@ -59,6 +60,10 @@ fn apply_settings_updates(
 
     if let Some(web_search_enabled) = web_search_enabled {
         settings_repo.update_web_search_enabled(web_search_enabled)?;
+    }
+
+    if let Some(max_tool_calls) = max_tool_calls_per_request {
+        settings_repo.update_max_tool_calls_per_request(max_tool_calls)?;
     }
 
     if let Some(api_key) = brave_api_key {
@@ -297,6 +302,7 @@ impl EventController {
                             use_behavior_trees,
                             openai_tracing_enabled,
                             web_search_enabled,
+                            max_tool_calls_per_request,
                             brave_api_key,
                         } => {
                             if let Some(api_key) = openai_api_key.as_deref() {
@@ -331,6 +337,7 @@ impl EventController {
                                 use_behavior_trees,
                                 openai_tracing_enabled,
                                 web_search_enabled,
+                                max_tool_calls_per_request,
                                 brave_api_key.as_deref(),
                             ) {
                                 send_failure_and_continue!(self, err);
@@ -551,6 +558,7 @@ mod tests {
                 use_behavior_trees: Some(true),
                 openai_tracing_enabled: None,
                 web_search_enabled: None,
+                max_tool_calls_per_request: Some(5),
                 brave_api_key: None,
             });
             let _ = sender.send(UiToAgentEvent::ShutdownEvent);
@@ -595,6 +603,7 @@ mod tests {
                 use_behavior_trees: None,
                 openai_tracing_enabled: None,
                 web_search_enabled: None,
+                max_tool_calls_per_request: Some(5),
                 brave_api_key: None,
             });
             let _ = sender.send(UiToAgentEvent::ShutdownEvent);

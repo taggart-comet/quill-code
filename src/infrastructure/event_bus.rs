@@ -62,6 +62,7 @@ pub enum UiToAgentEvent {
         use_behavior_trees: Option<bool>,
         openai_tracing_enabled: Option<bool>,
         web_search_enabled: Option<bool>,
+        max_tool_calls_per_request: Option<i32>,
         brave_api_key: Option<String>,
     },
 }

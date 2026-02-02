@@ -342,6 +342,7 @@ pub(crate) fn refresh_settings_from_db(conn: &DbPool, state: &mut UiState) -> Re
     state.settings.use_behavior_trees = settings.use_behavior_trees;
     state.settings.openai_tracing_enabled = settings.openai_tracing_enabled;
     state.settings.web_search_enabled = settings.web_search_enabled;
+    state.settings.max_tool_calls_per_request = settings.max_tool_calls_per_request;
     state.settings.status = LoadStatus::Loaded;
 
     // Get both model name and type
@@ -364,6 +365,7 @@ pub(crate) fn update_settings_in_db(
     use_behavior_trees: bool,
     openai_tracing: bool,
     web_search: bool,
+    max_tool_calls: i32,
 ) -> Result<(), String> {
     let conn_guard = conn
         .get()
@@ -377,6 +379,9 @@ pub(crate) fn update_settings_in_db(
         .map_err(|e| e.to_string())?;
     settings_repo
         .update_web_search_enabled(web_search)
+        .map_err(|e| e.to_string())?;
+    settings_repo
+        .update_max_tool_calls_per_request(max_tool_calls)
         .map_err(|e| e.to_string())?;
     Ok(())
 }

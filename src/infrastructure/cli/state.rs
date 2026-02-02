@@ -116,6 +116,7 @@ pub struct SettingsCache {
     pub use_behavior_trees: bool,
     pub openai_tracing_enabled: bool,
     pub web_search_enabled: bool,
+    pub max_tool_calls_per_request: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -177,11 +178,13 @@ pub enum PopupState {
         behavior_trees: bool,
         openai_tracing: bool,
         web_search: bool,
+        max_tool_calls: i32,
     },
     BraveApiKeyPrompt {
         web_search_enabled: bool,
         behavior_trees: bool,
         openai_tracing: bool,
+        max_tool_calls: i32,
     },
     OpenAiApiKeyPrompt {
         enable_tracing: bool,
@@ -290,6 +293,7 @@ impl UiState {
                 use_behavior_trees: false,
                 openai_tracing_enabled: false,
                 web_search_enabled: false,
+                max_tool_calls_per_request: 50,
             },
             loading_bar: LoadingBar::new(),
             openai_fetch_pending: false,

@@ -10,6 +10,7 @@ pub struct UserSettings {
     current_model_name: Option<String>,
     web_search_enabled: bool,
     brave_api_key: Option<String>,
+    max_tool_calls_per_request: i32,
 }
 
 impl UserSettings {
@@ -38,6 +39,10 @@ impl UserSettings {
     pub fn brave_api_key(&self) -> Option<&str> {
         self.brave_api_key.as_deref()
     }
+
+    pub fn max_tool_calls_per_request(&self) -> i32 {
+        self.max_tool_calls_per_request
+    }
 }
 
 impl From<UserSettingsRow> for UserSettings {
@@ -51,6 +56,7 @@ impl From<UserSettingsRow> for UserSettings {
             current_model_name: None,
             web_search_enabled: row.web_search_enabled,
             brave_api_key: row.brave_api_key,
+            max_tool_calls_per_request: row.max_tool_calls_per_request,
         }
     }
 }

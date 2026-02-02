@@ -43,6 +43,7 @@ pub fn submit_key(
             use_behavior_trees: None,
             openai_tracing_enabled: if enable_tracing { Some(true) } else { None },
             web_search_enabled: None,
+            max_tool_calls_per_request: None,
             brave_api_key: None,
         });
     refresh_settings_from_db(conn, state)?;

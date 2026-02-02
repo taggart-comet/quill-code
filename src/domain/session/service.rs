@@ -83,7 +83,7 @@ impl SessionService {
             (settings_row, model_name)
         }; // conn lock is dropped here
 
-        let request_settings =
+        let user_settings =
             UserSettings::from(settings_row.clone()).with_current_model_name(model_name);
 
         // Safeguard: if BuildFromPlan is requested but no valid TODO list exists,
@@ -124,20 +124,20 @@ impl SessionService {
         // We need a mutable session, but we only have a reference
         // The workflow uses session.current_prompt() which needs the current_request set
         // For now, we'll create a temporary session with the current request set
-        let mut session_with_request = session.clone();
-        session_with_request.set_current_request(prompt.to_string());
-        session_with_request.set_current_images(images.to_vec());
-        session_with_request.set_current_user_settings(Some(request_settings));
-        session_with_request.set_current_mode(effective_mode);
-        session_with_request.set_conn(self.conn.clone());
+        let mut request = session.clone();
+        request.set_current_request(prompt.to_string());
+        request.set_current_images(images.to_vec());
+        request.set_current_user_settings(Some(user_settings.clone()));
+        request.set_current_mode(effective_mode);
+        request.set_conn(self.conn.clone());
 
         // Run the workflow
         let result: Result<Chain, WorkflowError> = if self.use_behavior_trees {
             self.workflow
-                .run_using_bt(&mut session_with_request, cancel)
+                .run_using_bt(&mut request, cancel)
         } else {
             self.workflow
-                .run(&mut session_with_request, cancel, 128, effective_mode)
+                .run(&mut request, cancel, effective_mode)
                 .map_err(ServiceError::Workflow)?;
             Ok(self.workflow.get_chain().clone())
         };

@@ -816,8 +816,38 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         log::info!("Database migration to version 16 completed");
     }
 
+    // Migration v17: Add max_tool_calls_per_request to user_settings
+    if current_version < 17 {
+        log::info!("Migrating database from version {} to 17", current_version);
+
+        let column_exists = conn
+            .prepare("SELECT name FROM pragma_table_info('user_settings') WHERE name = 'max_tool_calls_per_request'")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| row.get::<_, String>(0))
+                    .map(|mut rows| rows.next().is_some())
+            })
+            .unwrap_or(false);
+
+        if !column_exists {
+            log::info!("Adding max_tool_calls_per_request column to user_settings table");
+            conn.execute(
+                "ALTER TABLE user_settings ADD COLUMN max_tool_calls_per_request INTEGER NOT NULL DEFAULT 50",
+                [],
+            )
+            .map_err(|e| format!("Failed to add max_tool_calls_per_request column: {}", e))?;
+        }
+
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '17')",
+            [],
+        )
+        .map_err(|e| format!("Failed to update schema_version: {}", e))?;
+
+        log::info!("Database migration to version 17 completed");
+    }
+
     conn.execute(
-        "INSERT OR IGNORE INTO user_settings (id, openai_tracing_enabled, use_behavior_trees, web_search_enabled) VALUES (1, 0, 0, 0)",
+        "INSERT OR IGNORE INTO user_settings (id, openai_tracing_enabled, use_behavior_trees, web_search_enabled, max_tool_calls_per_request) VALUES (1, 0, 0, 0, 50)",
         [],
     )
     .map_err(|e| format!("Failed to ensure user_settings row: {}", e))?;

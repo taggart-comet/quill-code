@@ -67,7 +67,7 @@ impl PermissionChecker {
     }
 
     /// Store a permission decision
-    pub fn store_permission_decision(
+    fn store_permission_decision(
         &self,
         request: &PermissionRequest,
         decision: PermissionDecision,
@@ -100,7 +100,7 @@ impl PermissionChecker {
     }
 
     /// Check if a command is dangerous
-    pub fn is_dangerous_command(&self, command: &str) -> bool {
+    fn is_dangerous_command(&self, command: &str) -> bool {
         self.config
             .dangerous_commands
             .iter()
@@ -108,7 +108,7 @@ impl PermissionChecker {
     }
 
     /// Check if a path is restricted
-    pub fn is_restricted_path(&self, path: &PathBuf) -> bool {
+    fn is_restricted_path(&self, path: &PathBuf) -> bool {
         let path_str = path.to_string_lossy();
         self.config
             .restricted_paths
@@ -173,31 +173,23 @@ impl PermissionChecker {
         &self,
         request: &PermissionRequest,
     ) -> Result<PermissionDecision, CheckerError> {
-        // Check specific command permissions first (highest priority)
-        if let Some(command) = &request.command {
-            if let Some(permission) = self.store.find_command_permission(
-                &request.tool_name,
-                command,
-                request.project_id,
-            )? {
-                return Ok(permission.decision);
-            }
+        let project_id: i32 = request.project_id.unwrap_or(0);
+        if project_id == 0 || request.paths.len() > 1 {
+            return Ok(PermissionDecision::Ask);
         }
 
-        // Check path-based permissions
-        for path in &request.paths {
-            if let Some(permission) =
-                self.store
-                    .find_path_permission(&request.tool_name, path, request.project_id)?
-            {
-                return Ok(permission.decision);
-            }
-        }
+        let command: &str = request.command.as_deref().unwrap_or("");
+        let path_string = if request.paths.is_empty() {
+            String::new()
+        } else {
+            request.paths[0].to_string_lossy().to_string()
+        };
+        let path: &str = &path_string;
 
         // Check tool-level permissions
         if let Some(permission) = self
             .store
-            .find_tool_permission(&request.tool_name, request.project_id)?
+            .find_permission(&request.tool_name, project_id, command, path)?
         {
             return Ok(permission.decision);
         }
@@ -239,31 +231,21 @@ mod tests {
 
     struct TestStore {
         created: Mutex<Vec<Permission>>,
-        tool_permission: Mutex<Option<Permission>>,
-        command_permission: Mutex<Option<Permission>>,
-        path_permission: Mutex<Option<Permission>>,
+        permissions: Mutex<Vec<Permission>>,
     }
 
     impl TestStore {
         fn new() -> Self {
             Self {
                 created: Mutex::new(Vec::new()),
-                tool_permission: Mutex::new(None),
-                command_permission: Mutex::new(None),
-                path_permission: Mutex::new(None),
+                permissions: Mutex::new(Vec::new()),
             }
         }
 
-        fn with_permissions(
-            tool_permission: Option<Permission>,
-            command_permission: Option<Permission>,
-            path_permission: Option<Permission>,
-        ) -> Self {
+        fn with_permissions(permissions: Vec<Permission>) -> Self {
             Self {
                 created: Mutex::new(Vec::new()),
-                tool_permission: Mutex::new(tool_permission),
-                command_permission: Mutex::new(command_permission),
-                path_permission: Mutex::new(path_permission),
+                permissions: Mutex::new(permissions),
             }
         }
     }
@@ -274,48 +256,76 @@ mod tests {
             Ok(permission)
         }
 
-        fn find_tool_permission(
+        fn find_permission(
             &self,
-            _tool: &str,
-            _project_id: Option<i32>,
+            tool: &str,
+            project_id: i32,
+            command_pattern: &str,
+            resource_pattern: &str,
         ) -> Result<Option<Permission>, StoreError> {
-            let permission = self.tool_permission.lock().unwrap().clone();
-            if let Some(permission) = permission {
-                if permission.matches(_tool, None, None::<&PathBuf>) {
-                    return Ok(Some(permission));
-                }
-            }
-            Ok(None)
-        }
+            let permissions = self.permissions.lock().unwrap();
 
-        fn find_command_permission(
-            &self,
-            _tool: &str,
-            _command: &str,
-            _project_id: Option<i32>,
-        ) -> Result<Option<Permission>, StoreError> {
-            let permission = self.command_permission.lock().unwrap().clone();
-            if let Some(permission) = permission {
-                if permission.matches(_tool, Some(_command), None::<&PathBuf>) {
-                    return Ok(Some(permission));
-                }
-            }
-            Ok(None)
-        }
+            // Find the most specific matching permission
+            // Priority: command+path > command > path > tool
+            let mut best_match: Option<(&Permission, i32)> = None;
 
-        fn find_path_permission(
-            &self,
-            _tool: &str,
-            _path: &PathBuf,
-            _project_id: Option<i32>,
-        ) -> Result<Option<Permission>, StoreError> {
-            let permission = self.path_permission.lock().unwrap().clone();
-            if let Some(permission) = permission {
-                if permission.matches(_tool, None, Some(_path)) {
-                    return Ok(Some(permission));
+            for permission in permissions.iter() {
+                // Check if project_id matches
+                if let Some(perm_project_id) = permission.project_id {
+                    if perm_project_id != project_id {
+                        continue;
+                    }
+                }
+
+                // Check if tool matches
+                if permission.tool_name != tool {
+                    continue;
+                }
+
+                // Calculate specificity and check if it matches
+                let mut specificity = 0;
+                let mut matches = true;
+
+                // Check command pattern
+                match &permission.command_pattern {
+                    Some(pattern) => {
+                        if !command_pattern.is_empty() && pattern == command_pattern {
+                            specificity += 2;
+                        } else if !command_pattern.is_empty() {
+                            matches = false;
+                        }
+                    }
+                    None => {
+                        // None means it matches any command
+                    }
+                }
+
+                // Check resource pattern
+                match &permission.resource_pattern {
+                    Some(pattern) => {
+                        if !resource_pattern.is_empty() && pattern == resource_pattern {
+                            specificity += 1;
+                        } else if !resource_pattern.is_empty() {
+                            matches = false;
+                        }
+                    }
+                    None => {
+                        // None means it matches any resource
+                    }
+                }
+
+                if matches {
+                    if let Some((_, best_specificity)) = best_match {
+                        if specificity > best_specificity {
+                            best_match = Some((permission, specificity));
+                        }
+                    } else {
+                        best_match = Some((permission, specificity));
+                    }
                 }
             }
-            Ok(None)
+
+            Ok(best_match.map(|(p, _)| p.clone()))
         }
     }
 
@@ -621,11 +631,11 @@ mod tests {
             PermissionScope::Project,
             Some(1),
         );
-        let store = Arc::new(TestStore::with_permissions(
-            Some(tool_permission),
-            Some(command_permission),
-            Some(path_permission),
-        ));
+        let store = Arc::new(TestStore::with_permissions(vec![
+            tool_permission,
+            command_permission,
+            path_permission,
+        ]));
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
@@ -660,11 +670,7 @@ mod tests {
             PermissionScope::Project,
             Some(1),
         );
-        let store = Arc::new(TestStore::with_permissions(
-            None,
-            None,
-            Some(path_permission),
-        ));
+        let store = Arc::new(TestStore::with_permissions(vec![path_permission]));
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
@@ -699,11 +705,7 @@ mod tests {
             PermissionScope::Project,
             Some(1),
         );
-        let store = Arc::new(TestStore::with_permissions(
-            Some(tool_permission),
-            None,
-            None,
-        ));
+        let store = Arc::new(TestStore::with_permissions(vec![tool_permission]));
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
@@ -790,7 +792,7 @@ mod tests {
     fn resolve_permission_returns_ask_for_read_only() {
         let abs = std::fs::canonicalize(".").expect("failed to canonicalize path");
 
-        let store = Arc::new(TestStore::with_permissions(None, None, None));
+        let store = Arc::new(TestStore::with_permissions(vec![]));
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),
@@ -834,11 +836,10 @@ mod tests {
             PermissionScope::Project,
             Some(1),
         );
-        let store = Arc::new(TestStore::with_permissions(
-            None,
-            Some(command_permission),
-            Some(path_permission),
-        ));
+        let store = Arc::new(TestStore::with_permissions(vec![
+            command_permission,
+            path_permission,
+        ]));
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),
@@ -874,11 +875,7 @@ mod tests {
             PermissionScope::Project,
             Some(1),
         );
-        let store = Arc::new(TestStore::with_permissions(
-            None,
-            None,
-            Some(path_permission),
-        ));
+        let store = Arc::new(TestStore::with_permissions(vec![path_permission]));
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),
@@ -910,11 +907,7 @@ mod tests {
             PermissionScope::Project,
             Some(1),
         );
-        let store = Arc::new(TestStore::with_permissions(
-            Some(tool_permission),
-            None,
-            None,
-        ));
+        let store = Arc::new(TestStore::with_permissions(vec![tool_permission]));
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),

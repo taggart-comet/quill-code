@@ -29,29 +29,36 @@ pub fn get_bt_tree_step_prompt(
     }
 }
 
-pub fn get_system_prompt(model_type: ModelType, agent_mode: AgentModeType) -> String {
+pub fn get_system_prompt(model_type: ModelType, agent_mode: AgentModeType, remaining_calls: usize) -> String {
     let (os_name, shell_name) = get_runtime_environment();
 
+    let mut system_prompt = "".to_string();
     if agent_mode == AgentModeType::Plan {
-        return _system_prompt_for_plan(model_type);
+        system_prompt = _system_prompt_for_plan(model_type);
+        system_prompt.push_str(&format!("\n\nYou have {} tool calls left to process this request.", remaining_calls));
+        return system_prompt;
     }
     if agent_mode == AgentModeType::BuildFromPlan {
-        return _system_prompt_for_build_from_plan(model_type);
+        system_prompt = _system_prompt_for_build_from_plan(model_type);
+        system_prompt.push_str(&format!("\n\nYou have {} tool calls left to process this request.", remaining_calls));
+        return system_prompt;
     }
     if model_type == ModelType::OpenAI {
-        format!(
+        system_prompt = format!(
             "You are Drastis, a coding agent. \n\
  Use the available tools to gather context and make changes. \
  When using tools, pass JSON arguments that match their parameters. \n\
  Runtime: os={}, shell={}.",
             os_name, shell_name
-        )
+        );
     } else {
-        format!(
+        system_prompt = format!(
             "You are Drastis, a coding agent. Use available tools to gather context and make changes. Be concise and accurate. Runtime: os={}, shell={}.",
             os_name, shell_name
-        )
+        );
     }
+    system_prompt.push_str(&format!("\n\nYou have {} tool calls left to process this request.", remaining_calls));
+    return system_prompt;
 }
 
 fn _system_prompt_for_plan(model_type: ModelType) -> String {

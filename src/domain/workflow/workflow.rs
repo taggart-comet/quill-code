@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use crossbeam_channel::Sender;
 use crate::domain::AgentModeType;
+use crate::domain::todo::TodoListStatus;
 
 /// Main workflow orchestrator that runs LLM-driven coding tasks
 /// Implements an eternal agent loop that:
@@ -32,6 +33,7 @@ pub struct Workflow {
     tracer: Option<TracingFacade>,
     event_sender: Sender<AgentToUiEvent>,
     conn: DbPool,
+    initial_toolset_type: Option<ToolsetType>,
 }
 
 impl Workflow {
@@ -53,6 +55,7 @@ impl Workflow {
             tracer: None,
             event_sender,
             conn,
+            initial_toolset_type: None,
         })
     }
 
@@ -64,7 +67,6 @@ impl Workflow {
         &mut self,
         request: &mut dyn Request,
         cancel: &CancellationToken,
-        max_tool_calls: usize,
         mode: AgentModeType,
     ) -> Result<(), Error> {
         // Select toolset based on mode
@@ -73,6 +75,9 @@ impl Workflow {
             AgentModeType::Plan => ToolsetType::Discover,
             AgentModeType::BuildFromPlan => ToolsetType::All,
         };
+
+        // Store initial toolset type for finishing mode logic
+        self.initial_toolset_type = Some(toolset_type);
 
         // Get session_id for tools that need it
         let session_id = request.session_id().unwrap();
@@ -88,7 +93,8 @@ impl Workflow {
         self.chain.add_history(request.get_history_steps());
         self.chain.set_todo_list(request.get_session_plan());
 
-        let result = self._run(request, cancel, max_tool_calls, None);
+        let result = self._run(request, cancel, None, None, mode);
+        self.chain.steps.push(ChainStep::user_message(request.current_request().to_string(), request.images().to_vec()));
         self._end_tracing();
         result
     }
@@ -118,6 +124,7 @@ impl Workflow {
                 prompting::get_bt_tree_step_prompt(self.engine.get_type(), step, request);
 
             let session_id = request.session_id().unwrap();
+            let mode = request.mode();
             self.toolset = step.toolset().build(
                 request.user_settings().unwrap(),
                 session_id,
@@ -128,8 +135,9 @@ impl Workflow {
             self._run(
                 request,
                 cancel,
-                step.max_tools_calls() as usize,
+                Some(step.max_tools_calls() as usize),
                 Some(step_user_prompt.clone()),
+                mode,
             )?;
             self.chain.steps.push(ChainStep {
                 step_type: StepType::BehaviorTreeStepPassed.as_str().to_string(),
@@ -158,9 +166,24 @@ impl Workflow {
         &mut self,
         request: &mut dyn Request,
         cancel: &CancellationToken,
-        max_tool_calls: usize,
+        max_tool_calls_override: Option<usize>,
         user_prompt_override: Option<String>,
+        mode: AgentModeType,
     ) -> Result<(), Error> {
+
+        // Get max_tool_calls from override (for BT mode) or user settings
+        let max_tool_calls = max_tool_calls_override.unwrap_or_else(|| {
+            request.user_settings()
+                .map(|s| s.max_tool_calls_per_request() as usize)
+                .unwrap_or(50)
+        });
+
+        // Initialize counter and tracking variables
+        let mut tool_call_count = 0;
+        let mut current_active_todo = self.chain.todo_list.clone();
+        let mut in_finishing_mode = false;
+        let finishing_threshold = if max_tool_calls > 5 { max_tool_calls - 5 } else { max_tool_calls };
+
         // Eternal agent loop
         for _iteration in 1..=max_tool_calls {
             // Check for cancellation at the start of each iteration
@@ -170,12 +193,31 @@ impl Workflow {
                 return Ok(());
             }
 
-            let system_prompt = prompting::get_system_prompt(self.engine.get_type(), request.mode());
+            // Calculate remaining calls
+            let remaining_calls = max_tool_calls.saturating_sub(tool_call_count);
+
+            // Get base system prompt and inject remaining count
+            let system_prompt = prompting::get_system_prompt(self.engine.get_type(), request.mode(), remaining_calls);
             let base_user_prompt = prompting::get_user_prompt(self.engine.get_type(), request);
             let user_prompt = user_prompt_override
                 .as_deref()
                 .unwrap_or(&base_user_prompt)
                 .to_string();
+
+            // Switch to finishing toolset if approaching limit
+            if !in_finishing_mode && tool_call_count >= finishing_threshold {
+                if let Some(initial_type) = self.initial_toolset_type {
+                    let finishing_type = initial_type.finishing_variant();
+                    let session_id = request.session_id().unwrap();
+                    self.toolset = finishing_type.build(
+                        request.user_settings().unwrap(),
+                        session_id,
+                        self.conn.clone(),
+                        self.event_sender.clone(),
+                    );
+                    in_finishing_mode = true;
+                }
+            }
 
             self._emit_inference_progress();
             self._trace_llm_start(user_prompt.clone());
@@ -225,6 +267,8 @@ impl Workflow {
 
             // Fallback for backward compatibility
             let tool_call = llm_output.tool_call.unwrap();
+            let is_update_todo = tool_call.name == "update_todo_list";
+
             let tool_result = self.tool_runner.run(
                 request,
                 tool_call,
@@ -232,12 +276,37 @@ impl Workflow {
                 self.tracer.as_mut(),
             );
             self.chain.add_step(tool_result);
+
+            // Increment counter after tool execution
+            tool_call_count += 1;
+
+            // Check if TODO item changed and reset counter if so (BuildFromPlan mode only)
+            if mode == AgentModeType::BuildFromPlan && is_update_todo {
+                if self._did_todo_item_change(&current_active_todo) {
+                    log::info!("Active TODO item changed, resetting counter from {} to 0", tool_call_count);
+                    tool_call_count = 0;
+                    current_active_todo = self.chain.todo_list.clone();
+
+                    // Exit finishing mode and restore full toolset
+                    if in_finishing_mode {
+                        log::info!("Exiting finishing mode, restoring full toolset");
+                        if let Some(initial_type) = self.initial_toolset_type {
+                            let session_id = request.session_id().unwrap();
+                            self.toolset = initial_type.build(
+                                request.user_settings().unwrap(),
+                                session_id,
+                                self.conn.clone(),
+                                self.event_sender.clone(),
+                            );
+                            in_finishing_mode = false;
+                        }
+                    }
+                }
+            }
+
             continue;
         }
 
-        if max_tool_calls > 0 {
-            log::warn!("Workflow reached maximum iterations ({})", max_tool_calls);
-        }
         Ok(())
     }
 
@@ -319,5 +388,30 @@ impl Workflow {
             tracer.add_output("LLM generation", output);
             tracer.end_span("LLM generation");
         }
+    }
+
+    /// Detects if the active TODO item has changed
+    /// Returns true if the first non-completed item's title is different
+    fn _did_todo_item_change(&self, previous_todo: &Option<crate::domain::todo::TodoList>) -> bool {
+        use crate::domain::todo::TodoListStatus;
+
+        // Get first non-completed item from previous TODO list
+        let prev_active = previous_todo.as_ref().and_then(|list| {
+            list.items.iter()
+                .find(|item| item.status != TodoListStatus::Completed)
+                .map(|item| &item.title)
+        });
+
+        // Get first non-completed item from current TODO list
+        let curr_active = self.chain.todo_list.as_ref().and_then(|list| {
+            list.items.iter()
+                .find(|item| item.status != TodoListStatus::Completed)
+                .map(|item| &item.title)
+        });
+
+        // If both are None, no change
+        // If one is None and the other isn't, change occurred
+        // If both exist but titles differ, change occurred
+        prev_active != curr_active
     }
 }

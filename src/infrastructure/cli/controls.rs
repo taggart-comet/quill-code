@@ -438,6 +438,7 @@ fn handle_popup_key(
             behavior_trees,
             openai_tracing,
             web_search,
+            max_tool_calls,
         } => match key.code {
             KeyCode::Esc => state.mode = UiMode::Normal,
             KeyCode::Up => {
@@ -469,6 +470,7 @@ fn handle_popup_key(
                                 web_search_enabled: true,
                                 behavior_trees: *behavior_trees,
                                 openai_tracing: *openai_tracing,
+                                max_tool_calls: *max_tool_calls,
                             });
                             should_apply = false;
                         } else {
@@ -485,6 +487,7 @@ fn handle_popup_key(
                         *behavior_trees,
                         *openai_tracing,
                         *web_search,
+                        *max_tool_calls,
                     )?;
                 }
             }
@@ -496,6 +499,7 @@ fn handle_popup_key(
                     *behavior_trees,
                     *openai_tracing,
                     *web_search,
+                    *max_tool_calls,
                 )?;
             }
             _ => {}
@@ -504,6 +508,7 @@ fn handle_popup_key(
             web_search_enabled,
             behavior_trees,
             openai_tracing,
+            max_tool_calls,
         } => match key.code {
             KeyCode::Esc => {
                 state.mode = UiMode::Normal;
@@ -525,6 +530,7 @@ fn handle_popup_key(
                     *behavior_trees,
                     *openai_tracing,
                     *web_search_enabled,
+                    *max_tool_calls,
                     api_key,
                 )?;
                 state.popup_input = None;

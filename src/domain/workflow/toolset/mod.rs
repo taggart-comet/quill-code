@@ -2,6 +2,8 @@ mod all;
 mod edit;
 mod none;
 mod discover;
+mod finishing_all;
+mod finishing_discover;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,6 +12,8 @@ pub use all::AllToolset;
 pub use edit::EditToolset;
 pub use none::NoneToolset;
 pub use discover::DiscoverToolset;
+pub use finishing_all::FinishingAllToolset;
+pub use finishing_discover::FinishingDiscoverToolset;
 use crate::infrastructure::db::DbPool;
 use crate::domain::tools::Tool;
 use crate::domain::UserSettings;
@@ -23,6 +27,9 @@ pub enum ToolsetType {
     Discover,
     Edit,
     All,
+    FinishingAll,
+    FinishingDiscover,
+    FinishingEdit,
 }
 
 impl ToolsetType {
@@ -38,6 +45,24 @@ impl ToolsetType {
             ToolsetType::Edit => Arc::new(EditToolset::new(session_id, conn, event_sender)),
             ToolsetType::All => Arc::new(AllToolset::new(session_id, settings, conn, event_sender)),
             ToolsetType::None => Arc::new(NoneToolset::new()),
+            ToolsetType::FinishingAll => Arc::new(FinishingAllToolset::new(session_id, conn, event_sender)),
+            ToolsetType::FinishingDiscover => Arc::new(FinishingDiscoverToolset::new(session_id, conn, event_sender)),
+            ToolsetType::FinishingEdit => Arc::new(EditToolset::new(session_id, conn, event_sender)),
+        }
+    }
+
+    /// Returns the finishing variant of this toolset type
+    pub fn finishing_variant(self) -> Self {
+        match self {
+            ToolsetType::All => ToolsetType::FinishingAll,
+            ToolsetType::Discover => ToolsetType::FinishingDiscover,
+            ToolsetType::Edit => ToolsetType::FinishingEdit,
+            // Finishing variants map to themselves
+            ToolsetType::FinishingAll => ToolsetType::FinishingAll,
+            ToolsetType::FinishingDiscover => ToolsetType::FinishingDiscover,
+            ToolsetType::FinishingEdit => ToolsetType::FinishingEdit,
+            // None maps to itself
+            ToolsetType::None => ToolsetType::None,
         }
     }
 }

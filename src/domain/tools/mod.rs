@@ -45,6 +45,7 @@ pub struct FileChange {
 
 pub struct ToolResult {
     tool_name: String,
+    call_id: String,
     pub(crate) input: String,
     is_successful: bool,
     output: String,
@@ -53,7 +54,7 @@ pub struct ToolResult {
 }
 
 impl ToolResult {
-    pub fn ok(tool_name: String, input: String, output: String) -> Self {
+    pub fn ok(tool_name: String, input: String, output: String, call_id: String) -> Self {
         Self {
             tool_name,
             input,
@@ -61,10 +62,11 @@ impl ToolResult {
             output,
             error_message: String::new(),
             file_changes: None,
+            call_id
         }
     }
 
-    pub fn error(tool_name: String, input: String, message: String) -> Self {
+    pub fn error(tool_name: String, input: String, message: String, call_id: String) -> Self {
         Self {
             tool_name,
             input,
@@ -72,6 +74,7 @@ impl ToolResult {
             output: String::new(),
             error_message: message.into(),
             file_changes: None,
+            call_id
         }
     }
 
@@ -128,11 +131,15 @@ impl ToolResult {
     pub fn file_changes(&self) -> Option<&[FileChange]> {
         self.file_changes.as_deref()
     }
+
+    pub(crate) fn call_id(&self) -> String {
+        self.call_id.clone()
+    }
 }
 
 pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
-    fn parse_input(&self, input: String) -> Option<Error>;
+    fn parse_input(&self, input: String, call_id: String) -> Option<Error>;
     fn work(&self, request: &dyn Request) -> ToolResult;
     fn parameters(&self) -> Value;
     fn desc(&self) -> String;

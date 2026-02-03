@@ -32,33 +32,38 @@ pub fn get_bt_tree_step_prompt(
 pub fn get_system_prompt(model_type: ModelType, agent_mode: AgentModeType, remaining_calls: usize) -> String {
     let (os_name, shell_name) = get_runtime_environment();
 
-    let mut system_prompt = "".to_string();
     if agent_mode == AgentModeType::Plan {
-        system_prompt = _system_prompt_for_plan(model_type);
-        system_prompt.push_str(&format!("\n\nYou have {} tool calls left to process this request.", remaining_calls));
+        let mut system_prompt = _system_prompt_for_plan(model_type);
+        if remaining_calls < 3 {
+            system_prompt.push_str(&format!("\n\nYou have {} tool calls left to process this request.", remaining_calls));
+        }
         return system_prompt;
     }
     if agent_mode == AgentModeType::BuildFromPlan {
-        system_prompt = _system_prompt_for_build_from_plan(model_type);
-        system_prompt.push_str(&format!("\n\nYou have {} tool calls left to process this request.", remaining_calls));
+        let mut system_prompt = _system_prompt_for_build_from_plan(model_type);
+        if remaining_calls < 3 {
+            system_prompt.push_str(&format!("\n\nYou have {} tool calls left to process this request.", remaining_calls));
+        }
         return system_prompt;
     }
-    if model_type == ModelType::OpenAI {
-        system_prompt = format!(
+    let mut system_prompt = if model_type == ModelType::OpenAI {
+        format!(
             "You are Drastis, a coding agent. \n\
  Use the available tools to gather context and make changes. \
  When using tools, pass JSON arguments that match their parameters. \n\
  Runtime: os={}, shell={}.",
             os_name, shell_name
-        );
+        )
     } else {
-        system_prompt = format!(
+        format!(
             "You are Drastis, a coding agent. Use available tools to gather context and make changes. Be concise and accurate. Runtime: os={}, shell={}.",
             os_name, shell_name
-        );
+        )
+    };
+    if remaining_calls < 3 {
+        system_prompt.push_str(&format!("\n\nYou have {} tool calls left to process this request.", remaining_calls));
     }
-    system_prompt.push_str(&format!("\n\nYou have {} tool calls left to process this request.", remaining_calls));
-    return system_prompt;
+    system_prompt
 }
 
 fn _system_prompt_for_plan(model_type: ModelType) -> String {

@@ -8,6 +8,7 @@ use std::path::Path;
 /// without being tightly coupled to the Session entity.
 pub trait Request {
     /// Get the history of previous requests
+    #[allow(dead_code)]
     fn history(&self) -> &[SessionRequest];
 
     /// Get the current request prompt

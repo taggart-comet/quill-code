@@ -401,12 +401,17 @@ mod tests {
             "read_only"
         }
 
-        fn parse_input(&self, _input: String) -> Option<Error> {
+        fn parse_input(&self, _input: String, _call_id: String) -> Option<Error> {
             None
         }
 
         fn work(&self, _request: &dyn Request) -> ToolResult {
-            ToolResult::ok("read_only".to_string(), String::new(), String::new())
+            ToolResult::ok(
+                "read_only".to_string(),
+                String::new(),
+                String::new(),
+                String::new(),
+            )
         }
 
         fn parameters(&self) -> serde_json::Value {
@@ -439,12 +444,17 @@ mod tests {
             "write_tool"
         }
 
-        fn parse_input(&self, _input: String) -> Option<Error> {
+        fn parse_input(&self, _input: String, _call_id: String) -> Option<Error> {
             None
         }
 
         fn work(&self, _request: &dyn Request) -> ToolResult {
-            ToolResult::ok("write_tool".to_string(), String::new(), String::new())
+            ToolResult::ok(
+                "write_tool".to_string(),
+                String::new(),
+                String::new(),
+                String::new(),
+            )
         }
 
         fn parameters(&self) -> serde_json::Value {
@@ -474,12 +484,17 @@ mod tests {
             "command_tool"
         }
 
-        fn parse_input(&self, _input: String) -> Option<Error> {
+        fn parse_input(&self, _input: String, _call_id: String) -> Option<Error> {
             None
         }
 
         fn work(&self, _request: &dyn Request) -> ToolResult {
-            ToolResult::ok("command_tool".to_string(), String::new(), String::new())
+            ToolResult::ok(
+                "command_tool".to_string(),
+                String::new(),
+                String::new(),
+                String::new(),
+            )
         }
 
         fn parameters(&self) -> serde_json::Value {

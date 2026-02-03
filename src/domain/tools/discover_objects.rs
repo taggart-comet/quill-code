@@ -15,6 +15,7 @@ pub struct DiscoverObjects {
 struct DiscoverObjectsInput {
     raw: String,
     full_path_to_file: String,
+    call_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -69,6 +70,7 @@ impl DiscoverObjects {
         Ok(DiscoverObjectsInput {
             raw: raw.to_string(),
             full_path_to_file: parsed.full_path_to_file,
+            call_id: String::new(),
         })
     }
 
@@ -86,12 +88,13 @@ impl Tool for DiscoverObjects {
         "discover_objects"
     }
 
-    fn parse_input(&self, input: String) -> Option<Error> {
+    fn parse_input(&self, input: String, call_id: String) -> Option<Error> {
         let trimmed = input.trim();
         let parsed = Self::parse_input_json(trimmed);
 
         match parsed {
-            Ok(parsed) => {
+            Ok(mut parsed) => {
+                parsed.call_id = call_id;
                 *self.input.lock().unwrap() = Some(parsed);
                 None
             }
@@ -103,17 +106,18 @@ impl Tool for DiscoverObjects {
         let input = match self.load_input() {
             Ok(input) => input,
             Err(e) => {
-                return ToolResult::error(self.name().to_string(), String::new(), e.to_string())
+                return ToolResult::error(self.name().to_string(), String::new(), e.to_string(), String::new())
             }
         };
 
         match Self::parse_file(&input.full_path_to_file) {
             Ok((lang, objects)) => ToolResult::ok(
                 self.name().to_string(),
-                input.raw,
+                input.raw.clone(),
                 Self::format_output(lang, &objects),
+                input.call_id,
             ),
-            Err(e) => ToolResult::error(self.name().to_string(), input.raw, e.to_string()),
+            Err(e) => ToolResult::error(self.name().to_string(), input.raw.clone(), e.to_string(), input.call_id),
         }
     }
 

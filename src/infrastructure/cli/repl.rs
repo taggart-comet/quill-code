@@ -159,6 +159,7 @@ fn handle_agent_event(
             });
             state.request_status = None;
             state.request_progress = None;
+            state.last_progress_update = None; // Reset timer for new request
             state.file_changes = None;
 
             // Display the user's message
@@ -175,7 +176,22 @@ fn handle_agent_event(
             summary,
         } => {
             if matches!(phase, StepPhase::Before) {
-                state.request_progress = Some(summary.clone());
+                // Check if enough time has passed since the last progress update
+                let can_update = state
+                    .last_progress_update
+                    .map(|last| {
+                        std::time::Instant::now()
+                            .duration_since(last)
+                            .as_millis()
+                            >= crate::infrastructure::cli::state::MIN_PROGRESS_DISPLAY_MS
+                    })
+                    .unwrap_or(true); // Update immediately if no previous update
+
+                if can_update {
+                    state.request_progress = Some(summary.clone());
+                    state.last_progress_update = Some(std::time::Instant::now());
+                }
+                // Otherwise skip this update - too soon since last one
             } else {
                 state.request_progress = None;
             }
@@ -207,6 +223,7 @@ fn handle_agent_event(
                 });
             }
             state.request_progress = None;
+            state.last_progress_update = None; // Reset timer when request finishes
 
             // Update the user message color based on request status
             for entry in state.progress.iter_mut() {

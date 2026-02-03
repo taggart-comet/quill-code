@@ -91,7 +91,7 @@ pub trait Toolset {
             .map(|t| t.as_ref())
             .ok_or_else(|| Error::Parse(format!("Tool not found: {}", tool_call.name)))?;
 
-        if let Some(err) = tool.parse_input(tool_call.arguments.clone()) {
+        if let Some(err) = tool.parse_input(tool_call.arguments.clone(), tool_call.call_id.clone()) {
             return Err(err);
         }
 

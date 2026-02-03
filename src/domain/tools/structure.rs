@@ -16,6 +16,7 @@ struct StructureInput {
     raw: String,
     path: String,
     max_depth: usize,
+    call_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,6 +128,7 @@ impl Structure {
             raw: raw.to_string(),
             path: parsed.path.unwrap_or_else(|| ".".to_string()),
             max_depth: parsed.max_depth.unwrap_or(3),
+            call_id: String::new(),
         })
     }
 
@@ -144,12 +146,13 @@ impl Tool for Structure {
         "structure"
     }
 
-    fn parse_input(&self, input: String) -> Option<Error> {
+    fn parse_input(&self, input: String, call_id: String) -> Option<Error> {
         let trimmed = input.trim();
         let parsed = Self::parse_input_json(trimmed);
 
         match parsed {
-            Ok(parsed) => {
+            Ok(mut parsed) => {
+                parsed.call_id = call_id;
                 *self.input.lock().unwrap() = Some(parsed);
                 None
             }
@@ -161,34 +164,36 @@ impl Tool for Structure {
         let input = match self.load_input() {
             Ok(input) => input,
             Err(e) => {
-                return ToolResult::error(self.name().to_string(), String::new(), e.to_string())
+                return ToolResult::error(self.name().to_string(), String::new(), e.to_string(), String::new())
             }
         };
 
         let target_path = match Self::resolve_path(&input.path, request.project_root()) {
             Ok(p) => p,
-            Err(e) => return ToolResult::error(self.name().to_string(), input.raw, e),
+            Err(e) => return ToolResult::error(self.name().to_string(), input.raw.clone(), e, input.call_id.clone()),
         };
 
         if !target_path.exists() {
             return ToolResult::error(
                 self.name().to_string(),
-                input.raw,
+                input.raw.clone(),
                 format!("Path does not exist: {}", target_path.display()),
+                input.call_id.clone(),
             );
         }
 
         if !target_path.is_dir() {
             return ToolResult::error(
                 self.name().to_string(),
-                input.raw,
+                input.raw.clone(),
                 format!("Path is not a directory: {}", target_path.display()),
+                input.call_id,
             );
         }
 
         let tree = Self::build_tree(&target_path, input.max_depth);
 
-        ToolResult::ok(self.name().to_string(), input.raw, tree)
+        ToolResult::ok(self.name().to_string(), input.raw, tree, input.call_id)
     }
 
     fn parameters(&self) -> serde_json::Value {

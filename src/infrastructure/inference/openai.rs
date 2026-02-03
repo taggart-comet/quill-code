@@ -66,15 +66,12 @@ impl OpenAIEngine {
 impl InferenceEngine for OpenAIEngine {
     fn generate(
         &self,
-        system_prompt: &str,
-        user_prompt: &str,
-        _max_tokens: u32,
         tools: &[&dyn crate::domain::tools::Tool],
         chain: &crate::domain::workflow::Chain,
         images: &[String],
         tracer: Option<&mut openai_agents_tracing::TracingFacade>,
     ) -> Result<LLMInferenceResult, InfaError> {
-        self.generate_with_responses_api(system_prompt, user_prompt, tools, chain, images, tracer)
+        self.generate_with_responses_api(tools, chain, images, tracer)
     }
     fn get_type(&self) -> ModelType {
         ModelType::OpenAI
@@ -85,15 +82,13 @@ impl OpenAIEngine {
     /// Generate using the Responses API (for newer models like codex, o-series)
     fn generate_with_responses_api(
         &self,
-        system_prompt: &str,
-        user_prompt: &str,
         tools: &[&dyn crate::domain::tools::Tool],
         chain: &crate::domain::workflow::Chain,
         images: &[String],
         tracer: Option<&mut openai_agents_tracing::TracingFacade>,
     ) -> Result<LLMInferenceResult, InfaError> {
         self.responses_client
-            .call_responses_api(system_prompt, user_prompt, tools, chain, images, tracer)
+            .call_responses_api(tools, chain, images, tracer)
             .map_err(|e| e)
     }
 }

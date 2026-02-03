@@ -33,8 +33,8 @@ impl AttachedImage {
     }
 }
 
-pub const INPUT_MIN_HEIGHT: usize = 3;
-pub const INPUT_MAX_HEIGHT: usize = 6;
+pub const INPUT_MIN_HEIGHT: usize = 1;
+pub const INPUT_MAX_HEIGHT: usize = 5;
 pub const PROGRESS_HISTORY_LIMIT: usize = 200;
 pub const MAIN_BODY_SCROLL_STEP: usize = 3;
 
@@ -51,6 +51,7 @@ pub enum ProgressKind {
 }
 
 pub const REQUEST_STATUS_DISPLAY_DURATION: Duration = Duration::from_secs(2);
+pub const MIN_PROGRESS_DISPLAY_MS: u128 = 1000; // 1 second minimum display time
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -260,6 +261,7 @@ pub struct UiState {
     pub request_in_flight: Option<RequestIndicator>,
     pub request_status: Option<RequestStatusDisplay>,
     pub request_progress: Option<String>,
+    pub last_progress_update: Option<Instant>,
     pub file_changes: Option<FileChangesDisplay>,
     pub agent_mode: AgentModeType,
     pub todo_list: Option<TodoListDisplay>,
@@ -300,6 +302,7 @@ impl UiState {
             request_in_flight: None,
             request_status: None,
             request_progress: None,
+            last_progress_update: None,
             file_changes: None,
             agent_mode: AgentModeType::Build, // Default to build mode
             todo_list: None,

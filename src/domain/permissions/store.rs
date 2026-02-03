@@ -1,7 +1,6 @@
 use super::types::{Permission, PermissionDecision, PermissionScope};
 use crate::infrastructure::db::DbPool;
 use rusqlite::params;
-use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -121,16 +120,19 @@ impl PermissionStore for SqlitePermissionStore {
     ) -> Result<Option<Permission>, StoreError> {
         // Build query dynamically to handle NULL values properly
         // In SQL, NULL != '', so we need to use IS NULL for empty strings
+        let mut param_num = 3;
         let command_clause = if command_pattern.is_empty() {
-            "command_pattern IS NULL"
+            "command_pattern IS NULL".to_string()
         } else {
-            "command_pattern = ?3"
+            let clause = format!("command_pattern = ?{}", param_num);
+            param_num += 1;
+            clause
         };
 
         let resource_clause = if resource_pattern.is_empty() {
-            "resource_pattern IS NULL"
+            "resource_pattern IS NULL".to_string()
         } else {
-            "resource_pattern = ?4"
+            format!("resource_pattern = ?{}", param_num)
         };
 
         let query = format!(
@@ -151,32 +153,28 @@ impl PermissionStore for SqlitePermissionStore {
             )))
         })?;
 
-        // Build params based on whether patterns are empty
-        let result = if command_pattern.is_empty() && resource_pattern.is_empty() {
-            conn.query_row(
-                &query,
-                params![project_id, tool],
-                |row| self.row_to_permission(row),
-            )
-        } else if command_pattern.is_empty() {
-            conn.query_row(
-                &query,
-                params![project_id, tool, resource_pattern],
-                |row| self.row_to_permission(row),
-            )
-        } else if resource_pattern.is_empty() {
-            conn.query_row(
-                &query,
-                params![project_id, tool, command_pattern],
-                |row| self.row_to_permission(row),
-            )
-        } else {
-            conn.query_row(
-                &query,
-                params![project_id, tool, command_pattern, resource_pattern],
-                |row| self.row_to_permission(row),
-            )
-        };
+        // Build params list dynamically to match the query
+        let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = vec![
+            Box::new(project_id),
+            Box::new(tool.to_string()),
+        ];
+
+        if !command_pattern.is_empty() {
+            param_values.push(Box::new(command_pattern.to_string()));
+        }
+
+        if !resource_pattern.is_empty() {
+            param_values.push(Box::new(resource_pattern.to_string()));
+        }
+
+        let params_refs: Vec<&dyn rusqlite::ToSql> = param_values
+            .iter()
+            .map(|p| p.as_ref())
+            .collect();
+
+        let result = conn.query_row(&query, params_refs.as_slice(), |row| {
+            self.row_to_permission(row)
+        });
 
         match result {
             Ok(permission) => Ok(Some(permission)),
@@ -186,48 +184,140 @@ impl PermissionStore for SqlitePermissionStore {
     }
 }
 
-impl SqlitePermissionStore {
-    fn find_matching_command_permission(
-        &self,
-        rows: rusqlite::MappedRows<
-            impl FnMut(&rusqlite::Row) -> Result<Permission, rusqlite::Error>,
-        >,
-        tool: &str,
-        command: &str,
-    ) -> Result<Option<Permission>, StoreError> {
-        for row_result in rows {
-            match row_result {
-                Ok(permission) => {
-                    if permission.matches(tool, Some(command), None::<&PathBuf>) {
-                        return Ok(Some(permission));
-                    }
-                }
-                Err(e) => return Err(StoreError::Database(e)),
-            }
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use r2d2_sqlite::SqliteConnectionManager;
 
-        Ok(None)
+    fn setup_test_db() -> DbPool {
+        let manager = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::new(manager).unwrap();
+        let conn = pool.get().unwrap();
+
+        // Create permissions table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS permissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tool_name TEXT NOT NULL,
+                command_pattern TEXT,
+                resource_pattern TEXT,
+                decision TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                project_id INTEGER,
+                created_at TEXT NOT NULL
+            )",
+            [],
+        ).unwrap();
+
+        pool
     }
 
-    fn find_matching_path_permission(
-        &self,
-        rows: rusqlite::MappedRows<
-            impl FnMut(&rusqlite::Row) -> Result<Permission, rusqlite::Error>,
-        >,
-        tool: &str,
-        path: &PathBuf,
-    ) -> Result<Option<Permission>, StoreError> {
-        for row_result in rows {
-            match row_result {
-                Ok(permission) => {
-                    if permission.matches(tool, None, Some(path)) {
-                        return Ok(Some(permission));
-                    }
-                }
-                Err(e) => return Err(StoreError::Database(e)),
-            }
-        }
+    #[test]
+    fn test_find_permission_with_null_patterns() {
+        let pool = setup_test_db();
+        let store = SqlitePermissionStore::new(pool.clone());
 
-        Ok(None)
+        // Create permission with NULL command and resource patterns
+        let permission = Permission::new(
+            "test_tool".to_string(),
+            None,
+            None,
+            PermissionDecision::AlwaysAllow,
+            PermissionScope::Project,
+            Some(1),
+        );
+        store.create_permission(permission).unwrap();
+
+        // Should find the permission when searching with empty strings
+        let result = store.find_permission("test_tool", 1, "", "").unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().decision, PermissionDecision::AlwaysAllow);
+    }
+
+    #[test]
+    fn test_find_permission_with_command_only() {
+        let pool = setup_test_db();
+        let store = SqlitePermissionStore::new(pool.clone());
+
+        // Create permission with command but NULL resource
+        let permission = Permission::new(
+            "test_tool".to_string(),
+            Some("echo test".to_string()),
+            None,
+            PermissionDecision::AlwaysDeny,
+            PermissionScope::Project,
+            Some(1),
+        );
+        store.create_permission(permission).unwrap();
+
+        // Should find the permission when searching with command and empty resource
+        let result = store.find_permission("test_tool", 1, "echo test", "").unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().decision, PermissionDecision::AlwaysDeny);
+    }
+
+    #[test]
+    fn test_find_permission_with_resource_only() {
+        let pool = setup_test_db();
+        let store = SqlitePermissionStore::new(pool.clone());
+
+        // Create permission with resource but NULL command
+        let permission = Permission::new(
+            "test_tool".to_string(),
+            None,
+            Some("/path/to/file".to_string()),
+            PermissionDecision::AlwaysAllow,
+            PermissionScope::Project,
+            Some(1),
+        );
+        store.create_permission(permission).unwrap();
+
+        // Should find the permission when searching with empty command and resource
+        let result = store.find_permission("test_tool", 1, "", "/path/to/file").unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().decision, PermissionDecision::AlwaysAllow);
+    }
+
+    #[test]
+    fn test_find_permission_with_both_patterns() {
+        let pool = setup_test_db();
+        let store = SqlitePermissionStore::new(pool.clone());
+
+        // Create permission with both patterns
+        let permission = Permission::new(
+            "test_tool".to_string(),
+            Some("rm -rf".to_string()),
+            Some("/etc/passwd".to_string()),
+            PermissionDecision::AlwaysDeny,
+            PermissionScope::Project,
+            Some(1),
+        );
+        store.create_permission(permission).unwrap();
+
+        // Should find the permission when searching with both patterns
+        let result = store.find_permission("test_tool", 1, "rm -rf", "/etc/passwd").unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().decision, PermissionDecision::AlwaysDeny);
+    }
+
+    #[test]
+    fn test_find_permission_no_match() {
+        let pool = setup_test_db();
+        let store = SqlitePermissionStore::new(pool.clone());
+
+        // Create permission with command
+        let permission = Permission::new(
+            "test_tool".to_string(),
+            Some("echo test".to_string()),
+            None,
+            PermissionDecision::AlwaysAllow,
+            PermissionScope::Project,
+            Some(1),
+        );
+        store.create_permission(permission).unwrap();
+
+        // Should NOT find when searching with different command
+        let result = store.find_permission("test_tool", 1, "rm -rf", "").unwrap();
+        assert!(result.is_none());
     }
 }

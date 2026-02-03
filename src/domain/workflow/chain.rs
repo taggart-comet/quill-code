@@ -17,6 +17,7 @@ pub struct Chain {
     pub fail_reason: String,
     #[serde(default)]
     pub final_message: Option<String>,
+    pub system_prompt: String,
 }
 
 impl Chain {
@@ -28,6 +29,7 @@ impl Chain {
             is_failed: false,
             fail_reason: String::new(),
             final_message: None,
+            system_prompt: String::new(),
         }
     }
 
@@ -119,6 +121,10 @@ impl Chain {
             .map(|step| step.summary.clone())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+    
+    pub fn set_system_prompt(&mut self, system_prompt: String) {
+        self.system_prompt = system_prompt;
     }
 
     #[allow(dead_code)]

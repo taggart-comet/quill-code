@@ -9,6 +9,7 @@ pub mod openai;
 pub struct ToolCall {
     pub name: String,
     pub arguments: String,
+    pub call_id: String,
 }
 
 pub struct LLMInferenceResult {
@@ -22,9 +23,6 @@ pub trait InferenceEngine: Send + Sync {
     /// Generate text without streaming output
     fn generate(
         &self,
-        system_prompt: &str,
-        user_prompt: &str,
-        max_tokens: u32,
         tools: &[&dyn Tool],
         chain: &Chain,
         images: &[String],

@@ -41,6 +41,7 @@ impl ToolRunner {
                     tool_call.name.clone(),
                     tool_call.arguments.clone(),
                     error_msg,
+                    tool_call.call_id.clone(),
                 );
             }
         };
@@ -73,11 +74,13 @@ impl ToolRunner {
                 tool.name().to_string(),
                 String::new(),
                 "Permission denied".to_string(),
+                String::new(),
             ),
             Err(err) => ToolResult::error(
                 tool.name().to_string(),
                 String::new(),
                 format!("Permission check error: {}", err),
+                String::new(),
             ),
         };
 

@@ -39,6 +39,8 @@ pub struct ChainStep {
     #[serde(default)]
     pub tool_name: Option<String>,
     #[serde(default)]
+    pub call_id: Option<String>,
+    #[serde(default)]
     pub tool_output: Option<String>,
     #[serde(default)]
     pub is_successful: Option<bool>,
@@ -60,6 +62,7 @@ impl ChainStep {
         let mut tool_output = None;
         let mut is_successful = None;
         let mut file_changes = None;
+        let mut call_id = None;
         if let Some(tr) = tool_result {
             summary = tr.summary();
             context_payload = tr.output_string();
@@ -68,6 +71,7 @@ impl ChainStep {
             tool_output = Some(tr.output_raw().to_string());
             is_successful = Some(tr.is_successful());
             file_changes = tr.file_changes().map(|fc| fc.to_vec());
+            call_id = Some(tr.call_id());
         }
 
         Self {
@@ -76,6 +80,7 @@ impl ChainStep {
             context_payload,
             input_payload,
             tool_name,
+            call_id,
             tool_output,
             is_successful,
             file_changes,
@@ -91,6 +96,7 @@ impl ChainStep {
             context_payload: raw_output.clone(),
             input_payload: String::new(),
             tool_name: None,
+            call_id: None,
             tool_output: Some(raw_output),
             is_successful: Some(true),
             file_changes: None,
@@ -118,6 +124,7 @@ impl ChainStep {
             context_payload: prompt.clone(),
             input_payload: prompt,
             tool_name: None,
+            call_id: None,
             tool_output: None,
             is_successful: Some(true),
             file_changes: None,

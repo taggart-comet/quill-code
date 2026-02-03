@@ -64,8 +64,6 @@ impl OpenAIClient {
 
     pub fn call_responses_api(
         &self,
-        system_prompt: &str,
-        user_prompt: &str,
         tools: &[&dyn crate::domain::tools::Tool],
         chain: &crate::domain::workflow::Chain,
         images: &[String],
@@ -74,8 +72,6 @@ impl OpenAIClient {
         let max_attempts = 3;
         for attempt in 1..=max_attempts {
             match self.call_responses_api_inner(
-                system_prompt,
-                user_prompt,
                 tools,
                 chain,
                 images,
@@ -121,24 +117,30 @@ impl OpenAIClient {
 
     fn call_responses_api_inner(
         &self,
-        system_prompt: &str,
-        user_prompt: &str,
         tools: &[&dyn crate::domain::tools::Tool],
         chain: &crate::domain::workflow::Chain,
         images: &[String],
-        tracer: Option<&mut openai_agents_tracing::TracingFacade>,
+        mut tracer: Option<&mut openai_agents_tracing::TracingFacade>,
     ) -> Result<LLMInferenceResult, Box<dyn Error + Send + Sync>> {
         let url = "https://api.openai.com/v1/responses";
 
         let request_body = build_request_dto(
             &self.model,
-            system_prompt,
-            user_prompt,
             images,
             tools,
             chain,
-            tracer,
+            tracer.as_deref_mut(),
         );
+
+        // Start span with model name and add request as JSON
+        if let Some(tracer) = &mut tracer {
+            tracer.start_span(&self.model, openai_agents_tracing::SpanKind::Generation);
+
+            // Convert request_body to JSON Value and set as input
+            if let Ok(request_json) = serde_json::to_value(&request_body) {
+                tracer.set_input_json(&self.model, request_json);
+            }
+        }
 
         let response = self
             .client
@@ -151,18 +153,35 @@ impl OpenAIClient {
         let body = response.text()?;
 
         if !status.is_success() {
+            if let Some(t) = tracer {
+                t.end_span(&self.model);
+            }
             return Err(Box::new(OpenAIClientError::Api { status, body }));
         }
 
         let dto = match serde_json::from_str::<ResponseDTO>(&body) {
             Ok(v) => v,
-            Err(e) => return Err(Box::new(OpenAIClientError::Deserialize { source: e, body })),
+            Err(e) => {
+                if let Some(t) = tracer {
+                    t.end_span(&self.model);
+                }
+                return Err(Box::new(OpenAIClientError::Deserialize { source: e, body }));
+            }
         };
+
+        // Add response as JSON and end span
+        if let Some(tracer) = &mut tracer {
+            if let Ok(response_json) = serde_json::to_value(&dto) {
+                tracer.set_output_json(&self.model, response_json);
+            }
+            tracer.end_span(&self.model);
+        }
 
         let result = build_llm_result(dto, tools);
         if result.summary.is_empty() && result.tool_call.is_none() {
             return Err(Box::new(OpenAIClientError::NoText { body }));
         }
+
         Ok(result)
     }
 }

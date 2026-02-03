@@ -1,20 +1,21 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ResponseDTO {
     output: Vec<OpenAIOutputItem>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OpenAIOutputItem {
     #[serde(rename = "type")]
     kind: String,
     content: Option<Vec<OpenAIContentItem>>,
     name: Option<String>,
     arguments: Option<String>,
+    call_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OpenAIContentItem {
     #[serde(rename = "type")]
     kind: String,
@@ -41,11 +42,12 @@ impl ResponseDTO {
                     }
                 }
             } else if item.kind == "function_call" {
-                if let (Some(name), Some(arguments)) = (item.name.as_ref(), item.arguments.as_ref())
+                if let (Some(name), Some(arguments), Some(call_id)) = (item.name.as_ref(), item.arguments.as_ref(), item.call_id.as_ref())
                 {
                     tool_call = Some(FunctionCall {
                         name: name.to_string(),
                         arguments: arguments.to_string(),
+                        call_id: call_id.to_string(),
                     });
                 }
             }
@@ -59,4 +61,5 @@ impl ResponseDTO {
 pub(crate) struct FunctionCall {
     pub name: String,
     pub arguments: String,
+    pub call_id: String,
 }

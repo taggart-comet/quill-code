@@ -5,6 +5,7 @@ use super::{
 use crate::domain::bt::GeneralTree;
 use crate::domain::prompting;
 use crate::domain::session::Request;
+use crate::domain::todo::TodoListStatus;
 use crate::infrastructure::db::DbPool;
 use crate::infrastructure::event_bus::{AgentToUiEvent, StepPhase};
 use crate::infrastructure::inference::InferenceEngine;
@@ -16,7 +17,6 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use crossbeam_channel::Sender;
 use crate::domain::AgentModeType;
-use crate::domain::todo::TodoListStatus;
 
 /// Main workflow orchestrator that runs LLM-driven coding tasks
 /// Implements an eternal agent loop that:
@@ -94,7 +94,6 @@ impl Workflow {
         self.chain.set_todo_list(request.get_session_plan());
 
         let result = self._run(request, cancel, None, None, mode);
-        self.chain.steps.push(ChainStep::user_message(request.current_request().to_string(), request.images().to_vec()));
         self._end_tracing();
         result
     }
@@ -145,6 +144,7 @@ impl Workflow {
                 context_payload: String::new(),
                 input_payload: step_user_prompt.to_string(),
                 tool_name: None,
+                call_id: None,
                 tool_output: None,
                 is_successful: Some(true),
                 file_changes: None,
@@ -170,6 +170,13 @@ impl Workflow {
         user_prompt_override: Option<String>,
         mode: AgentModeType,
     ) -> Result<(), Error> {
+
+        let base_user_prompt = prompting::get_user_prompt(self.engine.get_type(), request);
+        let user_prompt = user_prompt_override
+            .as_deref()
+            .unwrap_or(&base_user_prompt)
+            .to_string();
+        self.chain.steps.push(ChainStep::user_message(user_prompt.clone(), request.images().to_vec()));
 
         // Get max_tool_calls from override (for BT mode) or user settings
         let max_tool_calls = max_tool_calls_override.unwrap_or_else(|| {
@@ -198,11 +205,7 @@ impl Workflow {
 
             // Get base system prompt and inject remaining count
             let system_prompt = prompting::get_system_prompt(self.engine.get_type(), request.mode(), remaining_calls);
-            let base_user_prompt = prompting::get_user_prompt(self.engine.get_type(), request);
-            let user_prompt = user_prompt_override
-                .as_deref()
-                .unwrap_or(&base_user_prompt)
-                .to_string();
+            self.chain.set_system_prompt(system_prompt.clone());
 
             // Switch to finishing toolset if approaching limit
             if !in_finishing_mode && tool_call_count >= finishing_threshold {
@@ -220,13 +223,9 @@ impl Workflow {
             }
 
             self._emit_inference_progress();
-            self._trace_llm_start(user_prompt.clone());
 
             // Ask LLM to choose next tool
             let llm_output = match self.engine.generate(
-                &system_prompt,
-                &user_prompt,
-                1024,
                 &self.toolset.tool_refs(),
                 &self.chain,
                 request.images(),
@@ -237,8 +236,6 @@ impl Workflow {
                     return Err(Error::Inference(err.to_string()));
                 }
             };
-
-            self._trace_llm_end(llm_output.raw_output.clone());
 
             // Always capture the assistant's response in the chain
             if !llm_output.raw_output.is_empty() {
@@ -347,13 +344,6 @@ impl Workflow {
         self.chain = Chain::new();
     }
 
-    fn _trace_llm_start(&mut self, prompt: String) {
-        if let Some(tracer) = &mut self.tracer {
-            tracer.start_span("LLM generation", SpanKind::Generation);
-            tracer.add_input("LLM generation", prompt);
-        }
-    }
-
     fn _emit_inference_progress(&self) {
         let options = [
             "Thinking.. well kinda..",
@@ -383,18 +373,10 @@ impl Workflow {
             });
     }
 
-    fn _trace_llm_end(&mut self, output: String) {
-        if let Some(tracer) = &mut self.tracer {
-            tracer.add_output("LLM generation", output);
-            tracer.end_span("LLM generation");
-        }
-    }
-
     /// Detects if the active TODO item has changed
     /// Returns true if the first non-completed item's title is different
     fn _did_todo_item_change(&self, previous_todo: &Option<crate::domain::todo::TodoList>) -> bool {
-        use crate::domain::todo::TodoListStatus;
-
+        
         // Get first non-completed item from previous TODO list
         let prev_active = previous_todo.as_ref().and_then(|list| {
             list.items.iter()

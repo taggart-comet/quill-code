@@ -18,6 +18,7 @@ pub struct PatchFiles {
 struct PatchFilesInput {
     raw: String,
     patch: String,
+    call_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,6 +42,7 @@ impl PatchFiles {
         Ok(PatchFilesInput {
             raw: raw.to_string(),
             patch: parsed.patch,
+            call_id: String::new(),
         })
     }
 
@@ -58,12 +60,13 @@ impl Tool for PatchFiles {
         "patch_files"
     }
 
-    fn parse_input(&self, input: String) -> Option<Error> {
+    fn parse_input(&self, input: String, call_id: String) -> Option<Error> {
         let trimmed = input.trim();
         let parsed = Self::parse_input_json(trimmed);
 
         match parsed {
-            Ok(parsed) => {
+            Ok(mut parsed) => {
+                parsed.call_id = call_id;
                 *self.input.lock().unwrap() = Some(parsed);
                 None
             }
@@ -75,7 +78,7 @@ impl Tool for PatchFiles {
         let input = match self.load_input() {
             Ok(input) => input,
             Err(e) => {
-                return ToolResult::error(self.name().to_string(), String::new(), e.to_string())
+                return ToolResult::error(self.name().to_string(), String::new(), e.to_string(), String::new())
             }
         };
 
@@ -84,8 +87,9 @@ impl Tool for PatchFiles {
             Err(e) => {
                 return ToolResult::error(
                     self.name().to_string(),
-                    input.raw,
+                    input.raw.clone(),
                     format!("Failed to parse patch: {}", e),
+                    input.call_id.clone(),
                 )
             }
         };
@@ -115,8 +119,9 @@ impl Tool for PatchFiles {
             {
                 return ToolResult::error(
                     self.name().to_string(),
-                    input.raw,
+                    input.raw.clone(),
                     format!("Invalid path outside project root: {}", path),
+                    input.call_id.clone(),
                 );
             }
             let fs_path = project_root.join(rel_path);
@@ -129,8 +134,9 @@ impl Tool for PatchFiles {
                     Err(e) => {
                         return ToolResult::error(
                             self.name().to_string(),
-                            input.raw,
+                            input.raw.clone(),
                             format!("Failed to read file '{}': {}", fs_path.display(), e),
+                            input.call_id.clone(),
                         )
                     }
                 }
@@ -142,8 +148,9 @@ impl Tool for PatchFiles {
             Err(e) => {
                 return ToolResult::error(
                     self.name().to_string(),
-                    input.raw,
+                    input.raw.clone(),
                     format!("Failed to apply patch: {}", e),
+                    input.call_id.clone(),
                 )
             }
         };
@@ -155,28 +162,31 @@ impl Tool for PatchFiles {
                     if let Err(e) = fs::create_dir_all(parent) {
                         return ToolResult::error(
                             self.name().to_string(),
-                            input.raw,
+                            input.raw.clone(),
                             format!(
                                 "Failed to create parent directories for '{}': {}",
                                 fs_path.display(),
                                 e
                             ),
+                            input.call_id.clone(),
                         );
                     }
                 }
                 if let Err(e) = fs::write(&fs_path, content) {
                     return ToolResult::error(
                         self.name().to_string(),
-                        input.raw,
+                        input.raw.clone(),
                         format!("Failed to write file '{}': {}", fs_path.display(), e),
+                        input.call_id.clone(),
                     );
                 }
             } else if fs_path.exists() {
                 if let Err(e) = fs::remove_file(&fs_path) {
                     return ToolResult::error(
                         self.name().to_string(),
-                        input.raw,
+                        input.raw.clone(),
                         format!("Failed to delete file '{}': {}", fs_path.display(), e),
+                        input.call_id.clone(),
                     );
                 }
             }
@@ -224,6 +234,7 @@ impl Tool for PatchFiles {
             self.name().to_string(),
             input.raw,
             "Patch applied successfully".to_string(),
+            input.call_id,
         );
 
         if !file_changes.is_empty() {
@@ -531,7 +542,7 @@ mod tests {
             "{{\"patch\":\"{}\"}}",
             patch.replace('\n', "\\n").replace('"', "\\\"")
         );
-        assert!(tool.parse_input(input).is_none());
+        assert!(tool.parse_input(input, "call-id".to_string()).is_none());
         let result = tool.work(&request);
 
         assert!(
@@ -571,7 +582,7 @@ mod tests {
             "{{\"patch\":\"{}\"}}",
             patch.replace('\n', "\\n").replace('"', "\\\"")
         );
-        assert!(tool.parse_input(input).is_none());
+        assert!(tool.parse_input(input, "call-id".to_string()).is_none());
         let result = tool.work(&request);
 
         assert!(
@@ -592,7 +603,7 @@ mod tests {
 
         let tool = PatchFiles::new();
         let input = "{\"patch\":\"not a patch\"}".to_string();
-        assert!(tool.parse_input(input).is_none());
+        assert!(tool.parse_input(input, "call-id".to_string()).is_none());
         let result = tool.work(&request);
 
         assert!(

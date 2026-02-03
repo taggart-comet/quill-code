@@ -82,6 +82,38 @@ impl TracingFacade {
         }
     }
 
+    pub fn set_model_config(&mut self, name: impl AsRef<str>, config: HashMap<String, serde_json::Value>) {
+        if let Some(span) = self.open_spans.get_mut(name.as_ref()) {
+            if let SpanData::Generation(ref mut data) = span.span_data {
+                data.model_config = Some(config);
+            }
+        }
+    }
+
+    pub fn set_usage(&mut self, name: impl AsRef<str>, input_tokens: u32, output_tokens: u32) {
+        if let Some(span) = self.open_spans.get_mut(name.as_ref()) {
+            if let SpanData::Generation(ref mut data) = span.span_data {
+                data.usage = Some(crate::types::UsageData::new(input_tokens, output_tokens));
+            }
+        }
+    }
+
+    pub fn set_input_json(&mut self, name: impl AsRef<str>, input: serde_json::Value) {
+        if let Some(span) = self.open_spans.get_mut(name.as_ref()) {
+            if let SpanData::Generation(ref mut data) = span.span_data {
+                data.input = Some(vec![input]);
+            }
+        }
+    }
+
+    pub fn set_output_json(&mut self, name: impl AsRef<str>, output: serde_json::Value) {
+        if let Some(span) = self.open_spans.get_mut(name.as_ref()) {
+            if let SpanData::Generation(ref mut data) = span.span_data {
+                data.output = Some(vec![output]);
+            }
+        }
+    }
+
     pub async fn end(&mut self) {
         for (_, mut span) in self.open_spans.drain() {
             span.mark_ended();

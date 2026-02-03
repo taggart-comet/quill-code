@@ -29,6 +29,7 @@ pub struct Permission {
     pub created_at: DateTime<Utc>,
 }
 
+#[allow(dead_code)]
 impl Permission {
     pub fn new(
         tool_name: String,

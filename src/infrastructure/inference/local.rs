@@ -89,17 +89,39 @@ impl LocalEngine {
 }
 
 impl InferenceEngine for LocalEngine {
+    // so far very fucked up implementation, even user_prompt is not properly passed
+    // need to be refactored using proper request builder same way as for openai inference
     fn generate(
         &self,
-        system_prompt: &str,
-        user_prompt: &str,
-        max_tokens: u32,
         _tools: &[&dyn crate::domain::tools::Tool],
-        _chain: &crate::domain::workflow::Chain,
+        chain: &crate::domain::workflow::Chain,
         _images: &[String],
-        _tracer: Option<&mut openai_agents_tracing::TracingFacade>,
+        mut tracer: Option<&mut openai_agents_tracing::TracingFacade>,
     ) -> Result<LLMInferenceResult, InfaError> {
-        let prompt = format!("{}\n\n{}", system_prompt, user_prompt);
+        let model_name = "local";
+
+        // Start span with model name and add request as JSON
+        if let Some(tracer) = &mut tracer {
+            tracer.start_span(model_name, openai_agents_tracing::SpanKind::Generation);
+
+            // Set request as structured JSON input
+            let request_json = serde_json::json!({
+                "system_prompt": chain.system_prompt.clone(),
+                "user_prompt": chain.get_steps_with_history()[0].context_payload.clone(),
+                "max_tokens": 1000,
+            });
+            tracer.set_input_json(model_name, request_json);
+
+            // Set model configuration
+            let mut model_config = std::collections::HashMap::new();
+            model_config.insert("temperature".to_string(), serde_json::json!(self.params.temperature));
+            model_config.insert("top_p".to_string(), serde_json::json!(self.params.top_p));
+            model_config.insert("ctx_size".to_string(), serde_json::json!(self.params.ctx_size));
+            model_config.insert("threads".to_string(), serde_json::json!(self.params.threads));
+            tracer.set_model_config(model_name, model_config);
+        }
+
+        let prompt = format!("{}\n\n{}", chain.system_prompt.clone(), chain.get_steps_with_history()[0].context_payload.clone());
         let to_error = |msg: String| -> InfaError {
             std::io::Error::new(std::io::ErrorKind::Other, msg).into()
         };
@@ -145,7 +167,7 @@ impl InferenceEngine for LocalEngine {
         let mut output = String::new();
         let mut n_cur = tokens.len();
 
-        for _ in 0..max_tokens {
+        for _ in 0..2000 {
             let new_token = sampler.sample(&ctx, -1);
 
             if self.model.is_eog_token(new_token) {
@@ -167,6 +189,15 @@ impl InferenceEngine for LocalEngine {
                 .map_err(|e| to_error(format!("Decode failed: {}", e)))?;
 
             n_cur += 1;
+        }
+
+        // Add output as JSON and end span
+        if let Some(tracer) = tracer {
+            let response_json = serde_json::json!({
+                "text": &output,
+            });
+            tracer.set_output_json(model_name, response_json);
+            tracer.end_span(model_name);
         }
 
         Ok(LLMInferenceResult {

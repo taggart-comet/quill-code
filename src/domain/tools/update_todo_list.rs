@@ -18,6 +18,7 @@ pub struct UpdateTodoList {
 #[derive(Debug, Clone)]
 struct UpdateTodoListInput {
     raw: String,
+    call_id: String,
 }
 
 impl UpdateTodoList {
@@ -36,12 +37,12 @@ impl Tool for UpdateTodoList {
         "update_todo_list"
     }
 
-    fn parse_input(&self, input: String) -> Option<Error> {
+    fn parse_input(&self, input: String, call_id: String) -> Option<Error> {
         let parsed: Result<TodoList, _> = serde_json::from_str(&input);
         match parsed {
             Ok(_) => {
                 let mut lock = self.input.lock().unwrap();
-                *lock = Some(UpdateTodoListInput { raw: input });
+                *lock = Some(UpdateTodoListInput { raw: input, call_id });
                 None
             }
             Err(e) => Some(Error::Parse(format!("Failed to parse input: {}", e))),
@@ -57,6 +58,7 @@ impl Tool for UpdateTodoList {
                     self.name().to_string(),
                     String::new(),
                     "No input provided".to_string(),
+                    String::new(),
                 )
             }
         };
@@ -70,6 +72,7 @@ impl Tool for UpdateTodoList {
                     self.name().to_string(),
                     input.raw.clone(),
                     format!("Failed to get database connection: {}", e),
+                    input.call_id.clone(),
                 )
             }
         };
@@ -83,6 +86,7 @@ impl Tool for UpdateTodoList {
                     self.name().to_string(),
                     input.raw.clone(),
                     format!("Failed to get/create TODO list: {}", e),
+                    input.call_id.clone(),
                 )
             }
         };
@@ -92,6 +96,7 @@ impl Tool for UpdateTodoList {
                 self.name().to_string(),
                 input.raw.clone(),
                 format!("Failed to update TODO list: {}", e),
+                input.call_id.clone(),
             );
         }
 
@@ -106,6 +111,7 @@ impl Tool for UpdateTodoList {
             self.name().to_string(),
             input.raw,
             "TODO list updated successfully.".to_string(),
+            input.call_id,
         )
     }
 

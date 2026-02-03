@@ -4,6 +4,7 @@ use crate::repository::SessionRequestRow;
 /// Domain entity representing a user request within a session.
 /// Each request contains the user's prompt and the resulting summary.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SessionRequest {
     prompt: String,
     result_summary: Option<String>,

@@ -3,8 +3,6 @@ use crate::infrastructure::inference::{LLMInferenceResult, ToolCall};
 
 pub fn build_request_dto(
     model: &str,
-    system_prompt: &str,
-    user_prompt: &str,
     images: &[String],
     tools: &[&dyn crate::domain::tools::Tool],
     chain: &crate::domain::workflow::Chain,
@@ -25,8 +23,6 @@ pub fn build_request_dto(
 
     let dto = RequestDTO::new(
         model.to_string(),
-        system_prompt.to_string(),
-        user_prompt.to_string(),
         tools,
         chain,
     );
@@ -54,9 +50,10 @@ pub fn build_llm_result(
 
     let tool_call = if let Some(call) = tool_call_dto {
         // Create ToolCall for the workflow to use
-        Some(ToolCall {
+        Some(ToolCall{
             name: call.name.clone(),
             arguments: call.arguments.clone(),
+            call_id: call.call_id.clone(),
         })
     } else {
         None

@@ -16,6 +16,7 @@ struct WebSearchInput {
     raw: String,
     query: String,
     max_results: u32,
+    call_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,7 +95,7 @@ impl Tool for WebSearch {
         "web_search"
     }
 
-    fn parse_input(&self, input: String) -> Option<crate::domain::tools::Error> {
+    fn parse_input(&self, input: String, call_id: String) -> Option<crate::domain::tools::Error> {
         let trimmed = input.trim();
         match serde_json::from_str::<WebSearchInputJson>(trimmed) {
             Ok(parsed) => {
@@ -103,6 +104,7 @@ impl Tool for WebSearch {
                     raw: input,
                     query: parsed.query,
                     max_results,
+                    call_id,
                 };
                 *self.input.lock().unwrap() = Some(parsed_input);
                 None
@@ -118,7 +120,7 @@ impl Tool for WebSearch {
         let input = match self.load_input() {
             Ok(input) => input,
             Err(e) => {
-                return ToolResult::error(self.name().to_string(), String::new(), e);
+                return ToolResult::error(self.name().to_string(), String::new(), e, String::new());
             }
         };
 
@@ -130,6 +132,7 @@ impl Tool for WebSearch {
                     self.name().to_string(),
                     input.raw.clone(),
                     "User settings not available".to_string(),
+                    input.call_id.clone(),
                 );
             }
         };
@@ -139,6 +142,7 @@ impl Tool for WebSearch {
                 self.name().to_string(),
                 input.raw.clone(),
                 "Web search is not enabled in settings".to_string(),
+                input.call_id.clone(),
             );
         }
 
@@ -149,6 +153,7 @@ impl Tool for WebSearch {
                     self.name().to_string(),
                     input.raw.clone(),
                     "Brave API key not configured".to_string(),
+                    input.call_id.clone(),
                 );
             }
         };
@@ -159,12 +164,13 @@ impl Tool for WebSearch {
                 let output = WebSearchOutput { results };
                 match serde_json::to_string(&output) {
                     Ok(json_output) => {
-                        ToolResult::ok(self.name().to_string(), input.raw.clone(), json_output)
+                        ToolResult::ok(self.name().to_string(), input.raw.clone(), json_output, input.call_id)
                     }
                     Err(e) => ToolResult::error(
                         self.name().to_string(),
                         input.raw.clone(),
                         format!("Failed to serialize output: {}", e),
+                        input.call_id.clone(),
                     ),
                 }
             }
@@ -172,6 +178,7 @@ impl Tool for WebSearch {
                 self.name().to_string(),
                 input.raw.clone(),
                 format!("Search failed: {}", e),
+                input.call_id,
             ),
         }
     }
@@ -593,8 +600,10 @@ mod tests {
             user_settings,
         };
         let web_search = WebSearch::new();
-        let _ =
-            web_search.parse_input(r#"{"query":"site:docs.rs serde","max_results":5}"#.to_string());
+        let _ = web_search.parse_input(
+            r#"{"query":"site:docs.rs serde","max_results":5}"#.to_string(),
+            "call-id".to_string(),
+        );
 
         let _allowed = checker.check(&web_search, &request, Some(1)).unwrap();
 
@@ -629,8 +638,10 @@ mod tests {
             user_settings,
         };
         let web_search = WebSearch::new();
-        let _ =
-            web_search.parse_input(r#"{"query":"site:docs.rs serde","max_results":5}"#.to_string());
+        let _ = web_search.parse_input(
+            r#"{"query":"site:docs.rs serde","max_results":5}"#.to_string(),
+            "call-id".to_string(),
+        );
 
         let allowed = checker.check(&web_search, &request, Some(1)).unwrap();
 

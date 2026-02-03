@@ -25,6 +25,7 @@ struct ShellExecInputParsed {
     raw: String,
     command: String,
     working_dir: Option<String>,
+    call_id: String,
 }
 
 impl Tool for ShellExec {
@@ -32,7 +33,7 @@ impl Tool for ShellExec {
         "shell_exec"
     }
 
-    fn parse_input(&self, input: String) -> Option<Error> {
+    fn parse_input(&self, input: String, call_id: String) -> Option<Error> {
         let trimmed = input.trim();
         let parsed = serde_json::from_str::<ShellExecInput>(trimmed)
             .map_err(|e| Error::Parse(e.to_string()));
@@ -46,6 +47,7 @@ impl Tool for ShellExec {
                     raw: trimmed.to_string(),
                     command: parsed.command,
                     working_dir: parsed.working_dir,
+                    call_id,
                 });
                 None
             }
@@ -61,6 +63,7 @@ impl Tool for ShellExec {
                     self.name().to_string(),
                     String::new(),
                     "input not parsed".to_string(),
+                    String::new(),
                 )
             }
         };
@@ -72,15 +75,17 @@ impl Tool for ShellExec {
                 if !path.exists() {
                     return ToolResult::error(
                         self.name().to_string(),
-                        input.raw,
+                        input.raw.clone(),
                         format!("Working directory does not exist: {}", dir),
+                        input.call_id.clone(),
                     );
                 }
                 if !crate::utils::paths::is_within_root(path, request.project_root()) {
                     return ToolResult::error(
                         self.name().to_string(),
-                        input.raw,
+                        input.raw.clone(),
                         "Working directory is outside project root".to_string(),
+                        input.call_id.clone(),
                     );
                 }
                 path.to_path_buf()
@@ -99,8 +104,9 @@ impl Tool for ShellExec {
             Err(e) => {
                 return ToolResult::error(
                     self.name().to_string(),
-                    input.raw,
+                    input.raw.clone(),
                     format!("Failed to execute command: {}", e),
+                    input.call_id.clone(),
                 )
             }
         };
@@ -129,10 +135,10 @@ impl Tool for ShellExec {
             if !stderr.is_empty() {
                 result.push_str(&format!("[stderr]: {}", stderr));
             }
-            return ToolResult::error(self.name().to_string(), input.raw, result);
+            return ToolResult::error(self.name().to_string(), input.raw.clone(), result, input.call_id.clone());
         };
 
-        ToolResult::ok(self.name().to_string(), input.raw, result)
+        ToolResult::ok(self.name().to_string(), input.raw, result, input.call_id)
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -155,8 +161,9 @@ impl Tool for ShellExec {
 
     fn desc(&self) -> String {
         format!(
-            r#"Use `{}` tool to execute shell commands.
-Please DO NOT use it to read the full content of a file, this is not efficient, use `read_objects` tool for this."#,
+            "Use `{}` tool to execute shell commands.
+DO NOT use it to read code, this is not efficient, use `read_objects` tool for this. \n\
+DO NOT use it to change files, use `patch_files` tool for this.",
             self.name()
         )
     }
@@ -339,7 +346,7 @@ mod tests {
 
         let tool = ShellExec::new();
         assert!(tool
-            .parse_input(r#"{"command":"echo hello"}"#.to_string())
+            .parse_input(r#"{"command":"echo hello"}"#.to_string(), "call-id".to_string())
             .is_none());
         let result = tool.work(&request);
 
@@ -357,7 +364,7 @@ mod tests {
 
         let tool = ShellExec::new();
         assert!(tool
-            .parse_input(r#"{"command":"pwd"}"#.to_string())
+            .parse_input(r#"{"command":"pwd"}"#.to_string(), "call-id".to_string())
             .is_none());
         let result = tool.work(&request);
 
@@ -384,7 +391,7 @@ mod tests {
             .parse_input(format!(
                 r#"{{"command":"pwd","working_dir":"{}"}}"#,
                 subdir.display()
-            ))
+            ), "call-id".to_string())
             .is_none());
         let result = tool.work(&request);
 
@@ -405,7 +412,7 @@ mod tests {
 
         let tool = ShellExec::new();
         assert!(tool
-            .parse_input(r#"{"command":"pwd","working_dir":"/tmp"}"#.to_string())
+            .parse_input(r#"{"command":"pwd","working_dir":"/tmp"}"#.to_string(), "call-id".to_string())
             .is_none());
         let result = tool.work(&request);
 
@@ -424,7 +431,7 @@ mod tests {
 
         let tool = ShellExec::new();
         assert!(tool
-            .parse_input(r#"{"command":"exit 1"}"#.to_string())
+            .parse_input(r#"{"command":"exit 1"}"#.to_string(), "call-id".to_string())
             .is_none());
         let result = tool.work(&request);
 
@@ -443,7 +450,7 @@ mod tests {
 
         let tool = ShellExec::new();
         assert!(tool
-            .parse_input(r#"{"command":"echo error >&2 && exit 1"}"#.to_string())
+            .parse_input(r#"{"command":"echo error >&2 && exit 1"}"#.to_string(), "call-id".to_string())
             .is_none());
         let result = tool.work(&request);
 
@@ -457,7 +464,7 @@ mod tests {
         let request = TestRequest::new(temp.path());
 
         let tool = ShellExec::new();
-        let err = tool.parse_input(r#"{"command":""}"#.to_string());
+        let err = tool.parse_input(r#"{"command":""}"#.to_string(), "call-id".to_string());
         assert!(err.is_some());
         let result = tool.work(&request);
         assert!(result.output_string().contains("Error"));
@@ -474,7 +481,7 @@ mod tests {
             .parse_input(format!(
                 r#"{{"command":"echo 'test content' > {}"}}"#,
                 file_path.display()
-            ))
+            ), "call-id".to_string())
             .is_none());
         let result = tool.work(&request);
 
@@ -496,7 +503,7 @@ mod tests {
 
         let tool = ShellExec::new();
         assert!(tool
-            .parse_input(r#"{"command":"echo 'hello world' | tr 'a-z' 'A-Z'"}"#.to_string())
+            .parse_input(r#"{"command":"echo 'hello world' | tr 'a-z' 'A-Z'"}"#.to_string(), "call-id".to_string())
             .is_none());
         let result = tool.work(&request);
 

@@ -1,6 +1,7 @@
 use super::Error;
 use crate::domain::prompting::session_naming_prompt;
 use crate::domain::workflow::Chain;
+use crate::domain::workflow::ChainStep;
 use crate::domain::{Project, Session, SessionRequest};
 use crate::infrastructure::db::DbPool;
 use crate::infrastructure::inference::InferenceEngine;
@@ -83,38 +84,37 @@ impl StartupService {
         let prompt_preview: String = first_prompt.chars().take(100).collect();
         let naming_prompt = session_naming_prompt(self.engine.get_type(), &prompt_preview);
 
-        let chain = Chain::new();
-        let session_name =
-            match self
-                .engine
-                .generate("", &naming_prompt, 15, &[], &chain, &[], None)
-            {
-                Ok(raw) => {
-                    log::debug!("Raw session name response: {:?}", raw.summary);
-                    // Clean up the response
-                    let cleaned = raw
-                        .summary
-                        .lines()
-                        .next()
-                        .unwrap_or("")
-                        .trim()
-                        .trim_matches('"')
-                        .trim_matches('*')
-                        .replace("<|im_end|>", "")
-                        .trim()
-                        .to_string();
+        let mut chain = Chain::new();
+        chain
+            .steps
+            .push(ChainStep::user_message(naming_prompt.parse().unwrap(), Vec::new()));
+        let session_name = match self.engine.generate(&[], &chain, &[], None) {
+            Ok(raw) => {
+                log::debug!("Raw session name response: {:?}", raw.summary);
+                // Clean up the response
+                let cleaned = raw
+                    .summary
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('*')
+                    .replace("<|im_end|>", "")
+                    .trim()
+                    .to_string();
 
-                    if cleaned.is_empty() || cleaned.len() > 50 {
-                        Self::fallback_session_name(first_prompt)
-                    } else {
-                        cleaned
-                    }
-                }
-                Err(e) => {
-                    log::warn!("Session naming failed: {}", e);
+                if cleaned.is_empty() || cleaned.len() > 50 {
                     Self::fallback_session_name(first_prompt)
+                } else {
+                    cleaned
                 }
-            };
+            }
+            Err(e) => {
+                log::warn!("Session naming failed: {}", e);
+                Self::fallback_session_name(first_prompt)
+            }
+        };
 
         // Create session in database
         let conn = self

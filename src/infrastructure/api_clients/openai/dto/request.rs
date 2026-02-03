@@ -3,13 +3,13 @@ use crate::domain::{Chain, ModelType};
 use crate::domain::prompting::format_todo_list_message;
 use serde::Serialize;
 use serde_json::Value;
-use crate::domain::workflow::step::StepType::{AssistantResponse, ToolCall, UserMessage};
+use crate::domain::workflow::step::StepType;
 
 #[derive(Debug, Serialize)]
 pub struct RequestDTO {
     model: String,
     instructions: String,
-    input: Vec<InputDto>,
+    input: Vec<InputMessageDto>,
     tools: Vec<ToolDto>,
     tool_choice: String,
     parallel_tool_calls: bool,
@@ -18,12 +18,37 @@ pub struct RequestDTO {
 }
 
 #[derive(Debug, Serialize)]
-pub(super) struct InputDto {
+pub(super) struct MessageDto {
     content: Vec<InputContent>,
-    role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
     #[serde(rename = "type")]
     kind: String,
-    status: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct FunctionOutputDto {
+    output: String,
+    #[serde(rename = "type")]
+    kind: String,
+    call_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct FunctionCallDto {
+    arguments: String,
+    name: String,
+    #[serde(rename = "type")]
+    kind: String,
+    call_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum InputMessageDto {
+    Message(MessageDto),
+    FunctionOutput(FunctionOutputDto),
+    FunctionCall(FunctionCallDto),
 }
 
 #[derive(Debug, Serialize)]
@@ -63,10 +88,25 @@ impl InputContent {
         }
     }
 
-    pub fn function(text: String) -> Self {
-        Self::Text {
-            kind: "function".to_string(),
-            text,
+}
+
+impl FunctionOutputDto {
+    pub fn new(output: String, call_id: String) -> Self {
+        Self {
+            kind: "function_call_output".to_string(),
+            output,
+            call_id,
+        }
+    }
+}
+
+impl FunctionCallDto {
+    pub fn new(name: String, arguments: String, call_id: String) -> Self {
+        Self {
+            name,
+            kind: "function_call".to_string(),
+            arguments,
+            call_id,
         }
     }
 }
@@ -83,28 +123,23 @@ pub(super) struct ToolDto {
 const ROLE_USER: &str = "user";
 const ROLE_SYSTEM: &str = "system";
 const ROLE_ASSISTANT: &str = "assistant";
-const INPUT_STATUS_IN_PROGRESS: &str = "in_progress";
-const INPUT_STATUS_COMPLETED: &str = "completed";
-const INPUT_STATUS_FAILED: &str = "failed";
 
 impl RequestDTO {
     pub(crate) fn new(
         model: String,
-        system_prompt: String,
-        user_prompt: String,
         tools: &[&dyn Tool],
-        chain: &crate::domain::workflow::Chain,
+        chain: &Chain,
     ) -> Self {
         // User request is now part of the chain, no need to add separately
-        let input = InputDto::build(user_prompt, chain);
+        let input = MessageDto::build(chain);
 
         Self {
             model,
-            instructions: system_prompt,
+            instructions: chain.system_prompt.clone(),
             input,
             tools: tools.iter().map(|tool| ToolDto::from_tool(*tool)).collect(),
             tool_choice: "auto".to_string(),
-            parallel_tool_calls: true,
+            parallel_tool_calls: false,
             store: false,
             stream: false,
         }
@@ -123,50 +158,46 @@ impl ToolDto {
     }
 }
 
-impl InputDto {
-    fn build(user_prompt: String, chain: &Chain) -> Vec<Self> {
+impl MessageDto {
+    fn build(chain: &Chain) -> Vec<InputMessageDto> {
         let steps = chain.get_steps_with_history();
 
-        let mut result: Vec<Self> = steps
-            .iter()
-            .enumerate()
-            .map(|(idx, step)| {
-                // Determine status
-                let is_user_message = step.step_type == UserMessage.as_str();
+        let mut result: Vec<InputMessageDto> = Vec::new();
 
-                let status = if is_user_message || step.is_successful.unwrap_or(false) {
-                    INPUT_STATUS_COMPLETED
-                } else {
-                    INPUT_STATUS_FAILED
-                };
-                let mut role = ROLE_ASSISTANT.to_string();
+        for step in steps.iter() {
+            let is_user_message = step.step_type == StepType::UserMessage.as_str();
 
-                // Build content items
-                let content_items = if is_user_message {
-                    role = ROLE_USER.to_string();
-                    // For user messages, include text and images
+                if is_user_message {
+                    // User message: text + optional images
                     let mut items = vec![InputContent::text(step.input_payload.clone())];
 
-                    // Add image content items if present
                     if let Some(ref images) = step.images {
                         for image_url in images {
                             items.push(InputContent::image(image_url.clone()));
                         }
                     }
 
-                    items
-                } else {
-                    vec![InputContent::output_text(step.get_output(ModelType::OpenAI))]
-                };
+                    result.push(InputMessageDto::Message(Self {
+                        content: items,
+                        role: Some(ROLE_USER.to_string()),
+                        kind: "message".to_string(),
+                    }));
+                } else if step.step_type == StepType::ToolCall.as_str() {
 
-                Self {
-                    content: content_items,
-                    role,
-                    kind: "message".to_string(),
-                    status: status.to_string(),
+                    let tool_name = step.tool_name.clone().unwrap();
+                    let call_id = step.call_id.clone().unwrap();
+                    // Tool call output is a separate DTO type
+                result.push(InputMessageDto::FunctionCall(FunctionCallDto::new(tool_name, step.input_payload.clone(), call_id.clone())));
+                result.push(InputMessageDto::FunctionOutput(FunctionOutputDto::new(step.get_output(ModelType::OpenAI), call_id)));
+                } else {
+                    // Assistant message
+                    result.push(InputMessageDto::Message(Self {
+                        content: vec![InputContent::output_text(step.get_output(ModelType::OpenAI))],
+                        role: Some(ROLE_ASSISTANT.to_string()),
+                        kind: "message".to_string(),
+                    }));
                 }
-            })
-            .collect();
+        }
 
         // Add the plan as system message at the beginning if it exists and is not completed
         if let Some(ref todo_list) = chain.todo_list {
@@ -178,21 +209,14 @@ impl InputDto {
 
                 let todo_input = Self {
                     content: vec![InputContent::text(todo_message)],
-                    role: ROLE_SYSTEM.to_string(),
+                    role: Some(ROLE_SYSTEM.to_string()),
                     kind: "message".to_string(),
-                    status: INPUT_STATUS_COMPLETED.to_string(),
                 };
-                result.push(todo_input);
+
+                // Put it first
+                result.insert(0, InputMessageDto::Message(todo_input));
             }
         }
-
-        // and adding the current user message at the end
-        result.push(Self {
-            content: vec![InputContent::text(user_prompt)],
-            role: ROLE_USER.to_string(),
-            kind: "message".to_string(),
-            status: INPUT_STATUS_IN_PROGRESS.to_string(),
-        });
 
         result
     }

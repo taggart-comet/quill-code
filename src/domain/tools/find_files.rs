@@ -19,6 +19,7 @@ struct FindFilesInput {
     query: String,
     root: Option<String>,
     max_results: usize,
+    call_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,6 +133,7 @@ impl FindFiles {
             query: parsed.query,
             root: parsed.root,
             max_results: parsed.max_results.unwrap_or(20),
+            call_id: String::new(),
         })
     }
 
@@ -149,12 +151,13 @@ impl Tool for FindFiles {
         "find_files"
     }
 
-    fn parse_input(&self, input: String) -> Option<Error> {
+    fn parse_input(&self, input: String, call_id: String) -> Option<Error> {
         let trimmed = input.trim();
         let parsed = Self::parse_input_json(trimmed);
 
         match parsed {
-            Ok(parsed) => {
+            Ok(mut parsed) => {
+                parsed.call_id = call_id;
                 *self.input.lock().unwrap() = Some(parsed);
                 None
             }
@@ -166,7 +169,7 @@ impl Tool for FindFiles {
         let input = match self.load_input() {
             Ok(input) => input,
             Err(e) => {
-                return ToolResult::error(self.name().to_string(), String::new(), e.to_string())
+                return ToolResult::error(self.name().to_string(), String::new(), e.to_string(), String::new())
             }
         };
 
@@ -174,15 +177,16 @@ impl Tool for FindFiles {
         let search_root =
             match Self::resolve_search_root(input.root.as_deref(), request.project_root()) {
                 Ok(root) => root,
-                Err(e) => return ToolResult::error(self.name().to_string(), input.raw, e),
+                Err(e) => return ToolResult::error(self.name().to_string(), input.raw.clone(), e, input.call_id.clone()),
             };
 
         // Check if search root exists
         if !search_root.exists() {
             return ToolResult::error(
                 self.name().to_string(),
-                input.raw,
+                input.raw.clone(),
                 format!("Search root does not exist: {}", search_root.display()),
+                input.call_id,
             );
         }
 
@@ -204,7 +208,7 @@ impl Tool for FindFiles {
             output
         };
 
-        ToolResult::ok(self.name().to_string(), input.raw, output)
+        ToolResult::ok(self.name().to_string(), input.raw, output, input.call_id)
     }
 
     fn parameters(&self) -> serde_json::Value {

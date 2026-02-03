@@ -18,6 +18,7 @@ struct ReadObjectsInput {
     raw: String,
     full_path_to_file: String,
     queries: Vec<ObjectQuery>,
+    call_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,6 +139,7 @@ impl ReadObjects {
             raw: raw.to_string(),
             full_path_to_file: trimmed_path.to_string(),
             queries,
+            call_id: String::new(),
         })
     }
 
@@ -182,12 +184,13 @@ impl Tool for ReadObjects {
         "read_objects"
     }
 
-    fn parse_input(&self, input: String) -> Option<Error> {
+    fn parse_input(&self, input: String, call_id: String) -> Option<Error> {
         let trimmed = input.trim();
         let parsed = Self::parse_input_json(trimmed);
 
         match parsed {
-            Ok(parsed) => {
+            Ok(mut parsed) => {
+                parsed.call_id = call_id;
                 *self.input.lock().unwrap() = Some(parsed);
                 None
             }
@@ -199,17 +202,18 @@ impl Tool for ReadObjects {
         let input = match self.load_input() {
             Ok(input) => input,
             Err(e) => {
-                return ToolResult::error(self.name().to_string(), String::new(), e.to_string())
+                return ToolResult::error(self.name().to_string(), String::new(), e.to_string(), String::new())
             }
         };
 
         match Self::read_objects(&input.full_path_to_file, &input.queries) {
             Ok((lang, results)) => ToolResult::ok(
                 self.name().to_string(),
-                input.raw,
+                input.raw.clone(),
                 Self::format_output(lang, results),
+                input.call_id,
             ),
-            Err(e) => ToolResult::error(self.name().to_string(), input.raw, e.to_string()),
+            Err(e) => ToolResult::error(self.name().to_string(), input.raw.clone(), e.to_string(), input.call_id),
         }
     }
 
@@ -224,7 +228,7 @@ impl Tool for ReadObjects {
                 },
                 "query": {
                     "type": "string",
-                    "description": "comma- or space-separated object names (e.g., \"main\", \"Config\", or \"main, Config, Parser\")",
+                    "description": "comma- or space-separated object names (e.g., \"main\", \"Config\", or \"main, Config, Parser\"), grepping is not working here, use exact names",
                     "minLength": 1
                 }
             },
@@ -235,8 +239,8 @@ impl Tool for ReadObjects {
 
     fn desc(&self) -> String {
         format!(
-            "Use the `{}` tool to read source code of specific objects from a file. To determine correct properties to use for `{}`, use the `discover_objects` tool first.",
-            self.name(), self.name()
+            "Use the `{}` tool to read source code of specific objects from a file. To determine correct properties, use the `discover_objects` tool first.",
+            self.name(),
         )
     }
 
@@ -293,7 +297,7 @@ mod tests {
     fn test_parse_input_valid() {
         let tool = ReadObjects::new();
         let input = r#"{"path": "src/main.rs", "query": "main, Config"}"#;
-        let result = tool.parse_input(input.to_string());
+        let result = tool.parse_input(input.to_string(), "call-id".to_string());
         assert!(result.is_none(), "Expected no error, got: {:?}", result);
 
         // Verify the parsed input
@@ -308,7 +312,7 @@ mod tests {
     fn test_parse_input_empty_query() {
         let tool = ReadObjects::new();
         let input = r#"{"path": "src/main.rs", "query": ""}"#;
-        let result = tool.parse_input(input.to_string());
+        let result = tool.parse_input(input.to_string(), "call-id".to_string());
         assert!(result.is_some(), "Expected error for empty query");
 
         if let Some(Error::Parse(msg)) = result {
@@ -326,7 +330,7 @@ mod tests {
     fn test_parse_input_whitespace_query() {
         let tool = ReadObjects::new();
         let input = r#"{"path": "src/main.rs", "query": "   "}"#;
-        let result = tool.parse_input(input.to_string());
+        let result = tool.parse_input(input.to_string(), "call-id".to_string());
         assert!(result.is_some(), "Expected error for whitespace query");
 
         if let Some(Error::Parse(msg)) = result {
@@ -344,7 +348,7 @@ mod tests {
     fn test_parse_input_comma_only_query() {
         let tool = ReadObjects::new();
         let input = r#"{"path": "src/main.rs", "query": ",,,"}"#;
-        let result = tool.parse_input(input.to_string());
+        let result = tool.parse_input(input.to_string(), "call-id".to_string());
         assert!(result.is_some(), "Expected error for comma-only query");
 
         if let Some(Error::Parse(msg)) = result {
@@ -362,7 +366,7 @@ mod tests {
     fn test_parse_input_missing_path() {
         let tool = ReadObjects::new();
         let input = r#"{"path": "", "query": "main"}"#;
-        let result = tool.parse_input(input.to_string());
+        let result = tool.parse_input(input.to_string(), "call-id".to_string());
         assert!(result.is_some(), "Expected error for empty path");
 
         if let Some(Error::Parse(msg)) = result {
@@ -407,7 +411,7 @@ mod tests {
     fn test_parse_input_malformed_json() {
         let tool = ReadObjects::new();
         let input = r#"{"path": "src/main.rs", "query": "main"#; // Missing closing brace
-        let result = tool.parse_input(input.to_string());
+        let result = tool.parse_input(input.to_string(), "call-id".to_string());
         assert!(result.is_some(), "Expected error for malformed JSON");
     }
 
@@ -415,7 +419,7 @@ mod tests {
     fn test_parse_input_path_with_whitespace() {
         let tool = ReadObjects::new();
         let input = r#"{"path": "  src/main.rs  ", "query": "main"}"#;
-        let result = tool.parse_input(input.to_string());
+        let result = tool.parse_input(input.to_string(), "call-id".to_string());
         assert!(
             result.is_none(),
             "Expected no error for path with whitespace"
@@ -432,7 +436,7 @@ mod tests {
     fn test_parse_input_query_with_extra_whitespace() {
         let tool = ReadObjects::new();
         let input = r#"{"path": "src/main.rs", "query": "  main  ,  Config  "}"#;
-        let result = tool.parse_input(input.to_string());
+        let result = tool.parse_input(input.to_string(), "call-id".to_string());
         assert!(
             result.is_none(),
             "Expected no error for query with extra whitespace"
@@ -448,7 +452,7 @@ mod tests {
     fn test_parse_input_single_object() {
         let tool = ReadObjects::new();
         let input = r#"{"path": "src/lib.rs", "query": "MyStruct"}"#;
-        let result = tool.parse_input(input.to_string());
+        let result = tool.parse_input(input.to_string(), "call-id".to_string());
         assert!(
             result.is_none(),
             "Expected no error for single object query"

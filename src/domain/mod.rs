@@ -17,6 +17,7 @@ pub use session::{Session, SessionRequest};
 pub use startup::StartupService;
 pub use user_settings::UserSettings;
 pub use workflow::{CancellationToken, Chain};
+#[allow(unused_imports)]
 pub use todo::{TodoList, TodoItem};
 
 /// Model type enum matching the inference engine types

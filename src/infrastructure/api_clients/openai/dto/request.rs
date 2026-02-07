@@ -18,7 +18,7 @@ pub struct RequestDTO {
 }
 
 #[derive(Debug, Serialize)]
-pub(super) struct MessageDto {
+pub(in crate::infrastructure) struct MessageDto {
     content: Vec<InputContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     role: Option<String>,
@@ -27,7 +27,7 @@ pub(super) struct MessageDto {
 }
 
 #[derive(Debug, Serialize)]
-pub(super) struct FunctionOutputDto {
+pub(in crate::infrastructure) struct FunctionOutputDto {
     output: String,
     #[serde(rename = "type")]
     kind: String,
@@ -35,7 +35,7 @@ pub(super) struct FunctionOutputDto {
 }
 
 #[derive(Debug, Serialize)]
-pub(super) struct FunctionCallDto {
+pub(in crate::infrastructure) struct FunctionCallDto {
     arguments: String,
     name: String,
     #[serde(rename = "type")]

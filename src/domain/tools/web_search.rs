@@ -359,6 +359,11 @@ mod tests {
             Ok(permission)
         }
 
+        fn find_session_permissions(&self, _project_id: i32) -> Result<Vec<crate::domain::permissions::types::Permission>, StoreError> {
+            // Return empty for tests - this test doesn't use session permissions
+            Ok(Vec::new())
+        }
+
         fn find_permission(
             &self,
             tool: &str,
@@ -490,7 +495,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
-            decision: PermissionDecision::AlwaysAllow,
+            decision: PermissionDecision::AllowOnce,
         });
         let checker = PermissionChecker::new_with_prompter(
             store,
@@ -514,53 +519,13 @@ mod tests {
     }
 
     #[test]
-    fn web_search_uses_stored_tool_permission() {
-        let root = PathBuf::from("/tmp");
-        let user_settings = Some(make_mock_user_settings(true, Some("test-key")));
-
-        let tool_permission = crate::domain::permissions::types::Permission::new(
-            "web_search".to_string(),
-            None,
-            None,
-            PermissionDecision::AlwaysAllow,
-            PermissionScope::Project,
-            Some(1),
-        );
-        let store = Arc::new(TestStore::with_tool_permission(tool_permission));
-        let calls = Arc::new(AtomicUsize::new(0));
-        let prompter = Arc::new(TestPrompter {
-            calls: Arc::clone(&calls),
-            decision: PermissionDecision::AlwaysAllow,
-        });
-        let checker = PermissionChecker::new_with_prompter(
-            store,
-            PermissionConfig {
-                default_decision: PermissionDecision::Ask,
-                ..PermissionConfig::default()
-            },
-            prompter,
-        );
-
-        let request = TestRequest {
-            root,
-            user_settings,
-        };
-        let web_search = WebSearch::new();
-
-        let allowed = checker.check(&web_search, &request, Some(1)).unwrap();
-
-        assert!(allowed);
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
     fn web_search_permission_request_includes_query_hostname() {
         let root = PathBuf::from("/tmp");
         let user_settings = Some(make_mock_user_settings(true, Some("test-key")));
 
         let store = Arc::new(TestStore::new());
         let calls = Arc::new(AtomicUsize::new(0));
-        let decision_to_return = Arc::new(Mutex::new(PermissionDecision::AlwaysAllow));
+        let decision_to_return = Arc::new(Mutex::new(PermissionDecision::AllowOnce));
         let captured_request = Arc::new(Mutex::new(None::<PermissionRequest>));
 
         struct CapturingPrompter {
@@ -614,41 +579,4 @@ mod tests {
         assert_eq!(captured_req.paths, vec![PathBuf::from("docs.rs")]);
     }
 
-    #[test]
-    fn web_search_always_allow_stores_tool_permission() {
-        let root = PathBuf::from("/tmp");
-        let user_settings = Some(make_mock_user_settings(true, Some("test-key")));
-
-        let store = Arc::new(TestStore::new());
-        let prompter = Arc::new(TestPrompter {
-            calls: Arc::new(AtomicUsize::new(0)),
-            decision: PermissionDecision::AlwaysAllow,
-        });
-        let checker = PermissionChecker::new_with_prompter(
-            store.clone(),
-            PermissionConfig {
-                default_decision: PermissionDecision::Ask,
-                ..PermissionConfig::default()
-            },
-            prompter,
-        );
-
-        let request = TestRequest {
-            root,
-            user_settings,
-        };
-        let web_search = WebSearch::new();
-        let _ = web_search.parse_input(
-            r#"{"query":"site:docs.rs serde","max_results":5}"#.to_string(),
-            "call-id".to_string(),
-        );
-
-        let allowed = checker.check(&web_search, &request, Some(1)).unwrap();
-
-        assert!(allowed);
-        let created = store.created.lock().unwrap();
-        assert_eq!(created.len(), 1);
-        assert_eq!(created[0].tool_name, "web_search");
-        assert_eq!(created[0].resource_pattern, None);
-    }
 }

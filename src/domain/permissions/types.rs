@@ -4,10 +4,11 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PermissionDecision {
-    AlwaysAllow,
-    AlwaysDeny,
-    Ask,       // Prompt user each time
-    AllowOnce, // One-time approval
+    Ask,                       // Prompt user again
+    AllowOnce,                 // One-time approval
+    AllowAllReadsInSession,    // Session-wide read access
+    AllowAllWritesInSession,   // Session-wide write access
+    AllowCommandForProject,    // Allow specific command for this project (persistent)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -113,6 +114,20 @@ impl Permission {
             path_str == pattern
         }
     }
+
+    /// Check if this is a session-wide "allow all reads" permission
+    pub fn is_session_wide_all_reads(&self) -> bool {
+        matches!(self.decision, PermissionDecision::AllowAllReadsInSession)
+            && self.scope == PermissionScope::Session
+            && self.resource_pattern.as_ref().map(|p| p.ends_with("/**")).unwrap_or(false)
+    }
+
+    /// Check if this is a session-wide "allow all writes" permission
+    pub fn is_session_wide_all_writes(&self) -> bool {
+        matches!(self.decision, PermissionDecision::AllowAllWritesInSession)
+            && self.scope == PermissionScope::Session
+            && self.resource_pattern.as_ref().map(|p| p.ends_with("/**")).unwrap_or(false)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +137,8 @@ pub struct PermissionRequest {
     pub paths: Vec<PathBuf>,
     pub scope: PermissionScope,
     pub project_id: Option<i32>,
+    pub is_read_only: bool,
+    pub project_root: PathBuf,
 }
 
 impl PermissionRequest {
@@ -131,6 +148,8 @@ impl PermissionRequest {
         paths: Vec<PathBuf>,
         scope: PermissionScope,
         project_id: Option<i32>,
+        is_read_only: bool,
+        project_root: PathBuf,
     ) -> Self {
         Self {
             tool_name,
@@ -138,6 +157,8 @@ impl PermissionRequest {
             paths,
             scope,
             project_id,
+            is_read_only,
+            project_root,
         }
     }
 }

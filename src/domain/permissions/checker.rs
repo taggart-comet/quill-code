@@ -1,5 +1,5 @@
 use super::store::{PermissionStore, StoreError};
-use super::types::{PermissionConfig, PermissionDecision, PermissionRequest};
+use super::types::{PermissionConfig, PermissionDecision, PermissionRequest, PermissionScope};
 use crate::domain::session::Request;
 use crate::domain::tools::Tool;
 use crate::utils::paths::is_within_root;
@@ -52,6 +52,8 @@ impl PermissionChecker {
             tool.get_affected_paths(request),
             super::types::PermissionScope::Project,
             project_id,
+            tool.is_read_only(),
+            request.project_root().to_path_buf(),
         );
         let decision = self.resolve_permission(&permission_request)?;
         if decision == PermissionDecision::Ask
@@ -60,9 +62,14 @@ impl PermissionChecker {
             return Ok(true);
         }
         match decision {
-            PermissionDecision::AlwaysAllow | PermissionDecision::AllowOnce => Ok(true),
-            PermissionDecision::AlwaysDeny => Ok(false),
+            PermissionDecision::AllowOnce => Ok(true),
             PermissionDecision::Ask => self.prompt_and_store(&permission_request),
+            PermissionDecision::AllowAllReadsInSession
+            | PermissionDecision::AllowAllWritesInSession
+            | PermissionDecision::AllowCommandForProject => {
+                // These should have been resolved already, but handle them safely
+                Ok(true)
+            }
         }
     }
 
@@ -72,26 +79,47 @@ impl PermissionChecker {
         request: &PermissionRequest,
         decision: PermissionDecision,
     ) -> Result<(), CheckerError> {
-        // Don't store AllowOnce decisions
-        if decision == PermissionDecision::AllowOnce {
+        // Handle command-specific permissions (project-scoped, persistent)
+        if decision == PermissionDecision::AllowCommandForProject {
+            let permission = super::types::Permission::new(
+                request.tool_name.clone(),
+                request.command.clone(),  // Store the specific command
+                None,                      // No resource pattern for commands
+                decision,
+                PermissionScope::Project,  // Project scope = persistent
+                request.project_id,
+            );
+            self.store.create_permission(permission)?;
             return Ok(());
         }
 
-        let resource_pattern =
-            if decision == PermissionDecision::AlwaysAllow && request.tool_name == "web_search" {
-                None
-            } else if request.paths.len() == 1 {
-                Some(request.paths[0].to_string_lossy().to_string())
-            } else {
-                None
-            };
+        // Handle session-wide permissions
+        if !matches!(decision, PermissionDecision::AllowAllReadsInSession | PermissionDecision::AllowAllWritesInSession) {
+            return Ok(());
+        }
+
+        // Get project root pattern for session-wide permissions
+        let resource_pattern = if let Some(first_path) = request.paths.first() {
+            // Try to get the project root by going up the directory tree
+            let mut path = first_path.clone();
+            while let Some(parent) = path.parent() {
+                path = parent.to_path_buf();
+                // Stop when we find a reasonable root (has .git, or is a few levels up)
+                if path.join(".git").exists() || path.parent().is_none() {
+                    break;
+                }
+            }
+            Some(format!("{}/**", path.to_string_lossy()))
+        } else {
+            None
+        };
 
         let permission = super::types::Permission::new(
             request.tool_name.clone(),
-            request.command.clone(),
+            None,  // No command pattern for session-wide
             resource_pattern,
             decision,
-            request.scope.clone(),
+            PermissionScope::Session,
             request.project_id,
         );
 
@@ -174,24 +202,49 @@ impl PermissionChecker {
         request: &PermissionRequest,
     ) -> Result<PermissionDecision, CheckerError> {
         let project_id: i32 = request.project_id.unwrap_or(0);
-        if project_id == 0 || request.paths.len() > 1 {
+        if project_id == 0 {
             return Ok(PermissionDecision::Ask);
         }
 
-        let command: &str = request.command.as_deref().unwrap_or("");
-        let path_string = if request.paths.is_empty() {
-            String::new()
-        } else {
-            request.paths[0].to_string_lossy().to_string()
-        };
-        let path: &str = &path_string;
+        // Check for command-specific permissions first (project-scoped, persistent)
+        if let Some(command) = &request.command {
+            if let Ok(Some(perm)) = self.store.find_permission(
+                &request.tool_name,
+                project_id,
+                command,
+                "",
+            ) {
+                if perm.decision == PermissionDecision::AllowCommandForProject
+                    && perm.scope == PermissionScope::Project {
+                    return Ok(PermissionDecision::AllowOnce); // Grant this specific operation
+                }
+            }
+        }
 
-        // Check tool-level permissions
-        if let Some(permission) = self
-            .store
-            .find_permission(&request.tool_name, project_id, command, path)?
-        {
-            return Ok(permission.decision);
+        // Check for session-wide permissions
+        let session_permissions = self.store.find_session_permissions(project_id)?;
+        for perm in session_permissions {
+            // CRITICAL SECURITY CHECK: Only grant session-wide permissions if ALL paths are within project root
+            let all_paths_in_project = request.paths.iter().all(|path| {
+                let normalized = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    request.project_root.join(path)
+                };
+                is_within_root(&normalized, &request.project_root)
+            });
+
+            if !all_paths_in_project {
+                // Paths outside project - don't use session permission, ask explicitly
+                continue;
+            }
+
+            if request.is_read_only && perm.is_session_wide_all_reads() {
+                return Ok(PermissionDecision::AllowOnce); // Grant this specific operation
+            }
+            if !request.is_read_only && perm.is_session_wide_all_writes() {
+                return Ok(PermissionDecision::AllowOnce); // Grant this specific operation
+            }
         }
 
         // Apply default security rules
@@ -200,15 +253,13 @@ impl PermissionChecker {
 
     fn prompt_and_store(&self, request: &PermissionRequest) -> Result<bool, CheckerError> {
         match self.prompter.ask_permission(request) {
-            Ok(decision @ PermissionDecision::AlwaysAllow)
-            | Ok(decision @ PermissionDecision::AllowOnce) => {
+            Ok(decision @ PermissionDecision::AllowAllReadsInSession)
+            | Ok(decision @ PermissionDecision::AllowAllWritesInSession)
+            | Ok(decision @ PermissionDecision::AllowCommandForProject) => {
                 self.store_permission_decision(request, decision)?;
                 Ok(true)
             }
-            Ok(PermissionDecision::AlwaysDeny) => {
-                self.store_permission_decision(request, PermissionDecision::AlwaysDeny)?;
-                Ok(false)
-            }
+            Ok(PermissionDecision::AllowOnce) => Ok(true),
             Ok(PermissionDecision::Ask) => Ok(false),
             Err(AskError::IoError) => {
                 Err(CheckerError::Failed("Permission prompt failed".to_string()))
@@ -254,6 +305,24 @@ mod tests {
         fn create_permission(&self, permission: Permission) -> Result<Permission, StoreError> {
             self.created.lock().unwrap().push(permission.clone());
             Ok(permission)
+        }
+
+        fn find_session_permissions(&self, project_id: i32) -> Result<Vec<Permission>, StoreError> {
+            let permissions = self.permissions.lock().unwrap();
+            let session_perms: Vec<Permission> = permissions
+                .iter()
+                .filter(|p| {
+                    p.project_id == Some(project_id)
+                        && p.scope == PermissionScope::Session
+                        && matches!(
+                            p.decision,
+                            PermissionDecision::AllowAllReadsInSession
+                                | PermissionDecision::AllowAllWritesInSession
+                        )
+                })
+                .cloned()
+                .collect();
+            Ok(session_perms)
         }
 
         fn find_permission(
@@ -529,7 +598,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
-            decision: PermissionDecision::AlwaysAllow,
+            decision: PermissionDecision::AllowOnce,
         });
         let checker = PermissionChecker::new_with_prompter(
             store,
@@ -562,7 +631,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
-            decision: PermissionDecision::AlwaysAllow,
+            decision: PermissionDecision::AllowOnce,
         });
         let checker = PermissionChecker::new_with_prompter(
             store,
@@ -594,7 +663,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
-            decision: PermissionDecision::AlwaysAllow,
+            decision: PermissionDecision::AllowOnce,
         });
         let checker = PermissionChecker::new_with_prompter(
             store,
@@ -616,131 +685,6 @@ mod tests {
     }
 
     #[test]
-    fn command_permission_takes_precedence() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().to_path_buf();
-        let file_path = root.join("sample.txt");
-        std::fs::write(&file_path, "data").unwrap();
-
-        let command_permission = Permission::new(
-            "command_tool".to_string(),
-            Some("rm -rf /".to_string()),
-            None,
-            PermissionDecision::AlwaysDeny,
-            PermissionScope::Project,
-            Some(1),
-        );
-        let path_permission = Permission::new(
-            "command_tool".to_string(),
-            None,
-            Some(file_path.to_string_lossy().to_string()),
-            PermissionDecision::AlwaysAllow,
-            PermissionScope::Project,
-            Some(1),
-        );
-        let tool_permission = Permission::new(
-            "command_tool".to_string(),
-            None,
-            None,
-            PermissionDecision::AlwaysAllow,
-            PermissionScope::Project,
-            Some(1),
-        );
-        let store = Arc::new(TestStore::with_permissions(vec![
-            tool_permission,
-            command_permission,
-            path_permission,
-        ]));
-        let calls = Arc::new(AtomicUsize::new(0));
-        let prompter = Arc::new(TestPrompter {
-            calls: Arc::clone(&calls),
-            decision: PermissionDecision::AlwaysAllow,
-        });
-        let checker =
-            PermissionChecker::new_with_prompter(store, PermissionConfig::default(), prompter);
-        let request = TestRequest { root };
-        let tool = CommandTool {
-            command: "rm -rf /".to_string(),
-            paths: vec![file_path],
-        };
-
-        let allowed = checker.check(&tool, &request, Some(1)).unwrap();
-
-        assert!(!allowed);
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn path_permission_used_when_no_command_match() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().to_path_buf();
-        let file_path = root.join("sample.txt");
-        std::fs::write(&file_path, "data").unwrap();
-
-        let path_permission = Permission::new(
-            "command_tool".to_string(),
-            None,
-            Some(file_path.to_string_lossy().to_string()),
-            PermissionDecision::AlwaysDeny,
-            PermissionScope::Project,
-            Some(1),
-        );
-        let store = Arc::new(TestStore::with_permissions(vec![path_permission]));
-        let calls = Arc::new(AtomicUsize::new(0));
-        let prompter = Arc::new(TestPrompter {
-            calls: Arc::clone(&calls),
-            decision: PermissionDecision::AlwaysAllow,
-        });
-        let checker =
-            PermissionChecker::new_with_prompter(store, PermissionConfig::default(), prompter);
-        let request = TestRequest { root };
-        let tool = CommandTool {
-            command: "echo hi".to_string(),
-            paths: vec![file_path],
-        };
-
-        let allowed = checker.check(&tool, &request, Some(1)).unwrap();
-
-        assert!(!allowed);
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn tool_permission_used_when_no_command_or_path_match() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().to_path_buf();
-        let file_path = root.join("sample.txt");
-        std::fs::write(&file_path, "data").unwrap();
-
-        let tool_permission = Permission::new(
-            "command_tool".to_string(),
-            None,
-            None,
-            PermissionDecision::AlwaysAllow,
-            PermissionScope::Project,
-            Some(1),
-        );
-        let store = Arc::new(TestStore::with_permissions(vec![tool_permission]));
-        let calls = Arc::new(AtomicUsize::new(0));
-        let prompter = Arc::new(TestPrompter {
-            calls: Arc::clone(&calls),
-            decision: PermissionDecision::AlwaysAllow,
-        });
-        let checker =
-            PermissionChecker::new_with_prompter(store, PermissionConfig::default(), prompter);
-        let request = TestRequest { root };
-        let tool = CommandTool {
-            command: "echo hi".to_string(),
-            paths: vec![file_path],
-        };
-
-        let allowed = checker.check(&tool, &request, Some(1)).unwrap();
-
-        assert!(allowed);
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
     fn dangerous_command_forces_prompt() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().to_path_buf();
@@ -749,12 +693,12 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
-            decision: PermissionDecision::AlwaysAllow,
+            decision: PermissionDecision::AllowOnce,
         });
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig {
-                default_decision: PermissionDecision::AlwaysAllow,
+                default_decision: PermissionDecision::AllowOnce,
                 ..PermissionConfig::default()
             },
             prompter,
@@ -781,12 +725,12 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
-            decision: PermissionDecision::AlwaysAllow,
+            decision: PermissionDecision::AllowOnce,
         });
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig {
-                default_decision: PermissionDecision::AlwaysAllow,
+                default_decision: PermissionDecision::AllowOnce,
                 ..PermissionConfig::default()
             },
             prompter,
@@ -813,15 +757,17 @@ mod tests {
             PermissionConfig::default(),
             Arc::new(TestPrompter {
                 calls: Arc::new(AtomicUsize::new(0)),
-                decision: PermissionDecision::AlwaysAllow,
+                decision: PermissionDecision::AllowOnce,
             }),
         );
         let request = PermissionRequest::new(
             "read_objects".to_string(),
             Some("".to_string()),
-            vec![abs],
+            vec![abs.clone()],
             PermissionScope::Project,
             Some(1),
+            true,  // is_read_only
+            abs.parent().unwrap_or(&abs).to_path_buf(),
         );
 
         let decision = checker.resolve_permission(&request).unwrap();
@@ -839,7 +785,7 @@ mod tests {
             "command_tool".to_string(),
             Some("rm -rf /".to_string()),
             None,
-            PermissionDecision::AlwaysDeny,
+            PermissionDecision::Ask,
             PermissionScope::Project,
             Some(1),
         );
@@ -847,7 +793,7 @@ mod tests {
             "command_tool".to_string(),
             None,
             Some(file_path.to_string_lossy().to_string()),
-            PermissionDecision::AlwaysAllow,
+            PermissionDecision::AllowOnce,
             PermissionScope::Project,
             Some(1),
         );
@@ -860,20 +806,22 @@ mod tests {
             PermissionConfig::default(),
             Arc::new(TestPrompter {
                 calls: Arc::new(AtomicUsize::new(0)),
-                decision: PermissionDecision::AlwaysAllow,
+                decision: PermissionDecision::AllowOnce,
             }),
         );
         let request = PermissionRequest::new(
             "command_tool".to_string(),
             Some("rm -rf /".to_string()),
-            vec![file_path],
+            vec![file_path.clone()],
             PermissionScope::Project,
             Some(1),
+            false,  // is_read_only
+            root,
         );
 
         let decision = checker.resolve_permission(&request).unwrap();
 
-        assert_eq!(decision, PermissionDecision::AlwaysDeny);
+        assert_eq!(decision, PermissionDecision::Ask);
     }
 
     #[test]
@@ -886,7 +834,7 @@ mod tests {
             "command_tool".to_string(),
             None,
             Some(file_path.to_string_lossy().to_string()),
-            PermissionDecision::AlwaysAllow,
+            PermissionDecision::AllowOnce,
             PermissionScope::Project,
             Some(1),
         );
@@ -896,20 +844,22 @@ mod tests {
             PermissionConfig::default(),
             Arc::new(TestPrompter {
                 calls: Arc::new(AtomicUsize::new(0)),
-                decision: PermissionDecision::AlwaysAllow,
+                decision: PermissionDecision::AllowOnce,
             }),
         );
         let request = PermissionRequest::new(
             "command_tool".to_string(),
             None,
-            vec![file_path],
+            vec![file_path.clone()],
             PermissionScope::Project,
             Some(1),
+            false,  // is_read_only
+            root,
         );
 
         let decision = checker.resolve_permission(&request).unwrap();
 
-        assert_eq!(decision, PermissionDecision::AlwaysAllow);
+        assert_eq!(decision, PermissionDecision::Ask);
     }
 
     #[test]
@@ -918,7 +868,7 @@ mod tests {
             "command_tool".to_string(),
             None,
             None,
-            PermissionDecision::AlwaysDeny,
+            PermissionDecision::Ask,
             PermissionScope::Project,
             Some(1),
         );
@@ -928,7 +878,7 @@ mod tests {
             PermissionConfig::default(),
             Arc::new(TestPrompter {
                 calls: Arc::new(AtomicUsize::new(0)),
-                decision: PermissionDecision::AlwaysAllow,
+                decision: PermissionDecision::AllowOnce,
             }),
         );
         let request = PermissionRequest::new(
@@ -937,11 +887,13 @@ mod tests {
             vec![],
             PermissionScope::Project,
             Some(1),
+            false,  // is_read_only
+            PathBuf::from("/tmp"),
         );
 
         let decision = checker.resolve_permission(&request).unwrap();
 
-        assert_eq!(decision, PermissionDecision::AlwaysDeny);
+        assert_eq!(decision, PermissionDecision::Ask);
     }
 
     #[test]
@@ -950,12 +902,12 @@ mod tests {
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig {
-                default_decision: PermissionDecision::AlwaysAllow,
+                default_decision: PermissionDecision::AllowOnce,
                 ..PermissionConfig::default()
             },
             Arc::new(TestPrompter {
                 calls: Arc::new(AtomicUsize::new(0)),
-                decision: PermissionDecision::AlwaysAllow,
+                decision: PermissionDecision::AllowOnce,
             }),
         );
         let request = PermissionRequest::new(
@@ -964,10 +916,200 @@ mod tests {
             vec![],
             PermissionScope::Project,
             Some(1),
+            false,  // is_read_only
+            PathBuf::from("/tmp"),
         );
 
         let decision = checker.resolve_permission(&request).unwrap();
 
-        assert_eq!(decision, PermissionDecision::AlwaysAllow);
+        assert_eq!(decision, PermissionDecision::AllowOnce);
+    }
+
+    #[test]
+    fn session_read_permission_only_works_within_project() {
+        let project_dir = tempfile::tempdir().unwrap();
+        let external_dir = tempfile::tempdir().unwrap();
+        let project_root = project_dir.path().to_path_buf();
+        let external_file = external_dir.path().join("external.txt");
+        std::fs::write(&external_file, "data").unwrap();
+
+        // Create a session-wide read permission
+        let session_perm = Permission::new(
+            "read_only".to_string(),
+            None,
+            Some(format!("{}/**", project_root.to_string_lossy())),
+            PermissionDecision::AllowAllReadsInSession,
+            PermissionScope::Session,
+            Some(1),
+        );
+
+        let store = Arc::new(TestStore::with_permissions(vec![session_perm]));
+        let checker = PermissionChecker::new_with_prompter(
+            store,
+            PermissionConfig::default(),
+            Arc::new(TestPrompter {
+                calls: Arc::new(AtomicUsize::new(0)),
+                decision: PermissionDecision::AllowOnce,
+            }),
+        );
+
+        // Try to read a file OUTSIDE the project
+        let request = PermissionRequest::new(
+            "read_only".to_string(),
+            None,
+            vec![external_file],
+            PermissionScope::Project,
+            Some(1),
+            true,  // is_read_only
+            project_root,
+        );
+
+        let decision = checker.resolve_permission(&request).unwrap();
+
+        // Should NOT grant access via session permission - should Ask
+        assert_eq!(decision, PermissionDecision::Ask);
+    }
+
+    #[test]
+    fn session_write_permission_only_works_within_project() {
+        let project_dir = tempfile::tempdir().unwrap();
+        let external_dir = tempfile::tempdir().unwrap();
+        let project_root = project_dir.path().to_path_buf();
+        let external_file = external_dir.path().join("external.txt");
+        std::fs::write(&external_file, "data").unwrap();
+
+        // Create a session-wide write permission
+        let session_perm = Permission::new(
+            "write_tool".to_string(),
+            None,
+            Some(format!("{}/**", project_root.to_string_lossy())),
+            PermissionDecision::AllowAllWritesInSession,
+            PermissionScope::Session,
+            Some(1),
+        );
+
+        let store = Arc::new(TestStore::with_permissions(vec![session_perm]));
+        let checker = PermissionChecker::new_with_prompter(
+            store,
+            PermissionConfig::default(),
+            Arc::new(TestPrompter {
+                calls: Arc::new(AtomicUsize::new(0)),
+                decision: PermissionDecision::AllowOnce,
+            }),
+        );
+
+        // Try to write a file OUTSIDE the project
+        let request = PermissionRequest::new(
+            "write_tool".to_string(),
+            None,
+            vec![external_file],
+            PermissionScope::Project,
+            Some(1),
+            false,  // is_read_only
+            project_root,
+        );
+
+        let decision = checker.resolve_permission(&request).unwrap();
+
+        // Should NOT grant access via session permission - should Ask
+        assert_eq!(decision, PermissionDecision::Ask);
+    }
+
+    #[test]
+    fn session_read_permission_works_within_project() {
+        let project_dir = tempfile::tempdir().unwrap();
+        let project_root = project_dir.path().to_path_buf();
+        let internal_file = project_root.join("internal.txt");
+        std::fs::write(&internal_file, "data").unwrap();
+
+        // Create a session-wide read permission
+        let session_perm = Permission::new(
+            "read_only".to_string(),
+            None,
+            Some(format!("{}/**", project_root.to_string_lossy())),
+            PermissionDecision::AllowAllReadsInSession,
+            PermissionScope::Session,
+            Some(1),
+        );
+
+        let store = Arc::new(TestStore::with_permissions(vec![session_perm]));
+        let checker = PermissionChecker::new_with_prompter(
+            store,
+            PermissionConfig::default(),
+            Arc::new(TestPrompter {
+                calls: Arc::new(AtomicUsize::new(0)),
+                decision: PermissionDecision::AllowOnce,
+            }),
+        );
+
+        // Try to read a file INSIDE the project
+        let request = PermissionRequest::new(
+            "read_only".to_string(),
+            None,
+            vec![internal_file],
+            PermissionScope::Project,
+            Some(1),
+            true,  // is_read_only
+            project_root,
+        );
+
+        let decision = checker.resolve_permission(&request).unwrap();
+
+        // SHOULD grant access via session permission
+        assert_eq!(decision, PermissionDecision::AllowOnce);
+    }
+
+    #[test]
+    fn command_permission_allows_specific_command_for_project() {
+        let project_dir = tempfile::tempdir().unwrap();
+        let project_root = project_dir.path().to_path_buf();
+
+        // Create a project-scoped command permission
+        let command_perm = Permission::new(
+            "shell_exec".to_string(),
+            Some("npm test".to_string()),
+            None,
+            PermissionDecision::AllowCommandForProject,
+            PermissionScope::Project,
+            Some(1),
+        );
+
+        let store = Arc::new(TestStore::with_permissions(vec![command_perm]));
+        let checker = PermissionChecker::new_with_prompter(
+            store,
+            PermissionConfig::default(),
+            Arc::new(TestPrompter {
+                calls: Arc::new(AtomicUsize::new(0)),
+                decision: PermissionDecision::AllowOnce,
+            }),
+        );
+
+        // Request for the SAME command should be allowed
+        let request = PermissionRequest::new(
+            "shell_exec".to_string(),
+            Some("npm test".to_string()),
+            vec![],
+            PermissionScope::Project,
+            Some(1),
+            false,  // is_read_only
+            project_root.clone(),
+        );
+
+        let decision = checker.resolve_permission(&request).unwrap();
+        assert_eq!(decision, PermissionDecision::AllowOnce);  // Allowed via stored permission
+
+        // Request for a DIFFERENT command should ask
+        let different_request = PermissionRequest::new(
+            "shell_exec".to_string(),
+            Some("npm run build".to_string()),
+            vec![],
+            PermissionScope::Project,
+            Some(1),
+            false,
+            project_root,
+        );
+
+        let decision = checker.resolve_permission(&different_request).unwrap();
+        assert_eq!(decision, PermissionDecision::Ask);  // Different command, must ask
     }
 }

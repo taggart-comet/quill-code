@@ -88,6 +88,7 @@ pub enum AgentToUiEvent {
         command: Option<String>,
         paths: Vec<String>,
         scope: String,
+        is_read_only: bool,
     },
     RequestFinishedEvent {
         request_id: u64,

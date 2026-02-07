@@ -16,6 +16,7 @@ pub fn render(
     scope: &str,
     selected: usize,
     theme: Theme,
+    is_read_only: bool,
 ) {
     let width = min(
         (size.width as f32 * 0.7) as u16,
@@ -57,7 +58,7 @@ pub fn render(
         width: area.width,
         height: 5,
     };
-    let options = permission_options();
+    let options = permission_options(command.is_some(), is_read_only);
     let items: Vec<ListItem> = options
         .iter()
         .map(|option| ListItem::new(Line::from(Span::raw(*option))))
@@ -74,15 +75,28 @@ pub fn render(
     frame.render_stateful_widget(list, options_area, &mut list_state);
 }
 
-fn permission_options() -> [&'static str; 4] {
-    [
-        "[A] Always allow",
-        "[D] Always deny",
-        "[O] Allow once",
-        "[C] Cancel",
-    ]
+fn permission_options(has_command: bool, is_read_only: bool) -> Vec<&'static str> {
+    if has_command {
+        vec![
+            "[A] Allow",
+            "[C] Allow this Command for this Project",
+            "[D] Disallow",
+        ]
+    } else if is_read_only {
+        vec![
+            "[A] Allow",
+            "[R] Allow All Reads in Project for this Session",
+            "[D] Disallow",
+        ]
+    } else {
+        vec![
+            "[A] Allow",
+            "[W] Allow All Writes in Project for this Session",
+            "[D] Disallow",
+        ]
+    }
 }
 
 pub fn option_count() -> usize {
-    permission_options().len()
+    3
 }

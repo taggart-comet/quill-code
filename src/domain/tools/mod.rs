@@ -33,7 +33,7 @@ pub enum Error {
     Io(String),
 }
 
-pub const TOOL_OUTPUT_BUDGET_CHARS: usize = 2000;
+pub const TOOL_OUTPUT_BUDGET_CHARS: usize = 50000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileChange {
@@ -47,7 +47,7 @@ pub struct ToolResult {
     tool_name: String,
     call_id: String,
     pub(crate) input: String,
-    is_successful: bool,
+is_successful: bool,
     output: String,
     error_message: String,
     file_changes: Option<Vec<FileChange>>,

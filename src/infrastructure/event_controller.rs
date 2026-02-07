@@ -2,7 +2,7 @@ use crate::domain::permissions::{PermissionConfig, PermissionDecision, Permissio
 use crate::domain::{CancellationToken, SessionService, StartupService};
 use crate::infrastructure::db::DbPool;
 use crate::infrastructure::event_bus::{
-    AgentToUiEvent, EventBus, PermissionUpdate, RequestStatus, StepPhase, UiToAgentEvent,
+    AgentToUiEvent, EventBus, ImageAttachment, PermissionUpdate, RequestStatus, StepPhase, UiToAgentEvent,
 };
 use crate::infrastructure::inference::InferenceEngine;
 use crate::infrastructure::init::{
@@ -85,6 +85,7 @@ pub struct EventController {
     cancel_token: CancellationToken,
     permission_response_tx: Option<Sender<PermissionUpdate>>,
     request_counter: u64,
+    pending_request: Option<(String, Vec<ImageAttachment>, crate::domain::AgentModeType, Option<i64>)>,
 }
 
 impl EventController {
@@ -116,6 +117,7 @@ impl EventController {
             cancel_token: CancellationToken::new(),
             permission_response_tx: None,
             request_counter: 1,
+            pending_request: None,
         })
     }
 
@@ -128,6 +130,17 @@ impl EventController {
                 recv(worker_status_rx) -> _ => {
                     worker_running = false;
                     self.permission_response_tx = None;
+
+                    // Check if there's a pending request to start
+                    if let Some((prompt, images, mode, session_id)) = self.pending_request.take() {
+                        log::info!("Starting pending request after interruption");
+                        let _ = self.bus.ui_to_agent_tx.send(UiToAgentEvent::RequestEvent {
+                            prompt,
+                            images,
+                            mode,
+                            session_id,
+                        });
+                    }
                 }
                 recv(self.bus.ui_to_agent_rx) -> msg => {
                     let event = match msg {
@@ -215,7 +228,11 @@ impl EventController {
                         }
                         UiToAgentEvent::RequestEvent { prompt, images, mode, session_id } => {
                             if worker_running {
-                                send_failure_and_continue!(self, "Request already running");
+                                // Interrupt current request and queue new one
+                                log::info!("Interrupting current request for new request");
+                                self.cancel_token.cancel();
+                                self.pending_request = Some((prompt, images, mode, session_id));
+                                continue;
                             }
 
                             if let Some(sid) = session_id {
@@ -521,6 +538,7 @@ mod tests {
     use crate::infrastructure::event_bus::{ModelSelection, UiToAgentEvent};
     use crate::repository::{MetaRepository, ModelsRepository, UserSettingsRepository};
     use crossbeam_channel::unbounded;
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -645,6 +663,8 @@ mod tests {
             vec![],
             PermissionScope::Project,
             Some(1),
+            false,  // is_read_only
+            PathBuf::from("/tmp"),
         );
 
         let handler = thread::spawn(move || {
@@ -661,11 +681,11 @@ mod tests {
 
         let _ = update_tx.send(PermissionUpdate {
             request_id,
-            decision: PermissionDecision::AlwaysAllow,
+            decision: PermissionDecision::AllowOnce,
         });
 
         let decision = handler.join().expect("join handler");
-        assert_eq!(decision, PermissionDecision::AlwaysAllow);
+        assert_eq!(decision, PermissionDecision::AllowOnce);
     }
 }
 
@@ -708,6 +728,7 @@ impl PermissionPrompter for BusPermissionPrompter {
             command: request.command.clone(),
             paths,
             scope: scope.to_string(),
+            is_read_only: request.is_read_only,
         });
 
         loop {

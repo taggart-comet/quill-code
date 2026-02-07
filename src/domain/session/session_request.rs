@@ -13,10 +13,12 @@ pub struct SessionRequest {
 }
 
 impl SessionRequest {
+    #[allow(dead_code)]
     pub fn prompt(&self) -> &str {
         &self.prompt
     }
 
+    #[allow(dead_code)]
     pub fn result_summary(&self) -> Option<&str> {
         self.result_summary.as_deref()
     }

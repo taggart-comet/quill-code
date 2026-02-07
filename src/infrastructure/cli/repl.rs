@@ -293,6 +293,7 @@ fn handle_agent_event(
             command,
             paths,
             scope,
+            is_read_only,
         } => {
             state.mode = UiMode::Popup(PopupState::PermissionPrompt {
                 request_id,
@@ -301,6 +302,7 @@ fn handle_agent_event(
                 paths,
                 scope,
                 selected: 0,
+                is_read_only,
             });
         }
         AgentToUiEvent::TodoListUpdateEvent { items } => {

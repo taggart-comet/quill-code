@@ -38,6 +38,7 @@ impl SessionRequestStepsRepository {
     }
 
     /// Load steps for a single request
+    #[allow(dead_code)]
     pub fn load_steps_for_request(&self, request_id: i64) -> Result<Vec<ChainStep>, String> {
         let conn = self
             .conn

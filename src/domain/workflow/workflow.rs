@@ -71,7 +71,7 @@ impl Workflow {
     ) -> Result<(), Error> {
         // Select toolset based on mode
         let toolset_type = match mode {
-            AgentModeType::Build => ToolsetType::All,
+            AgentModeType::Build => ToolsetType::AllNoTodo,
             AgentModeType::Plan => ToolsetType::Discover,
             AgentModeType::BuildFromPlan => ToolsetType::All,
         };

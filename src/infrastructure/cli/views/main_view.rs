@@ -423,6 +423,7 @@ fn render_popup(
             paths,
             scope,
             selected,
+            is_read_only,
             ..
         } => {
             permissions::render(
@@ -434,6 +435,7 @@ fn render_popup(
                 scope,
                 *selected,
                 theme,
+                *is_read_only,
             );
         }
         PopupState::ContinueSelect { sessions, selected } => {

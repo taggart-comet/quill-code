@@ -17,6 +17,7 @@ impl TodoListStatus {
         }
     }
 
+    #[allow(dead_code)]
     pub fn from_str(value: &str) -> Self {
         match value {
             "pending" | "PENDING" | "planned" | "PLANNED" | "todo" | "TODO" => TodoListStatus::Pending,

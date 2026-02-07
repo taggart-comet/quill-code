@@ -200,6 +200,7 @@ pub enum PopupState {
         paths: Vec<String>,
         scope: String,
         selected: usize,
+        is_read_only: bool,
     },
     ContinueSelect {
         sessions: Vec<SessionPreview>,
@@ -327,11 +328,11 @@ impl UiState {
             }
             self.active_progress = Some(self.progress.len());
         }
+        // Simplified scroll logic: only auto-scroll when following
+        // When user has scrolled up, their viewport stays at that position
+        // as new messages arrive (standard chat behavior)
         if self.main_body_follow {
             self.main_body_scroll = 0;
-        } else if self.main_body_scroll > 0 {
-            let added_lines = entry.text.lines().count().max(1);
-            self.main_body_scroll = self.main_body_scroll.saturating_add(added_lines);
         }
         self.progress.push_back(entry);
     }

@@ -33,6 +33,11 @@ impl CancellationToken {
         self.cancelled.load(Ordering::Relaxed)
     }
 
+    /// Request cancellation
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
     /// Reset the token for reuse
     pub fn reset(&self) {
         self.cancelled.store(false, Ordering::Relaxed);

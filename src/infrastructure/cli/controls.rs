@@ -568,11 +568,12 @@ fn handle_popup_key(
             }
             _ => {}
         },
-        PopupState::PermissionPrompt { selected, .. } => {
+        PopupState::PermissionPrompt { selected, is_read_only, command, .. } => {
             let options_len = permissions::option_count();
+            let has_command = command.is_some();
             match key.code {
-                KeyCode::Esc => {
-                    submit_permission_decision(bus, popup, PermissionDecision::AlwaysDeny)?;
+                KeyCode::Esc | KeyCode::Char('d') | KeyCode::Char('D') => {
+                    submit_permission_decision(bus, popup, PermissionDecision::Ask)?;
                     state.mode = UiMode::Normal;
                 }
                 KeyCode::Up => {
@@ -586,27 +587,39 @@ fn handle_popup_key(
                     }
                 }
                 KeyCode::Char('a') | KeyCode::Char('A') => {
-                    submit_permission_decision(bus, popup, PermissionDecision::AlwaysAllow)?;
-                    state.mode = UiMode::Normal;
-                }
-                KeyCode::Char('d') | KeyCode::Char('D') => {
-                    submit_permission_decision(bus, popup, PermissionDecision::AlwaysDeny)?;
-                    state.mode = UiMode::Normal;
-                }
-                KeyCode::Char('o') | KeyCode::Char('O') => {
                     submit_permission_decision(bus, popup, PermissionDecision::AllowOnce)?;
                     state.mode = UiMode::Normal;
                 }
                 KeyCode::Char('c') | KeyCode::Char('C') => {
-                    submit_permission_decision(bus, popup, PermissionDecision::AlwaysDeny)?;
-                    state.mode = UiMode::Normal;
+                    if has_command {
+                        submit_permission_decision(bus, popup, PermissionDecision::AllowCommandForProject)?;
+                        state.mode = UiMode::Normal;
+                    }
+                }
+                KeyCode::Char('r') | KeyCode::Char('R') => {
+                    if !has_command && *is_read_only {
+                        submit_permission_decision(bus, popup, PermissionDecision::AllowAllReadsInSession)?;
+                        state.mode = UiMode::Normal;
+                    }
+                }
+                KeyCode::Char('w') | KeyCode::Char('W') => {
+                    if !has_command && !*is_read_only {
+                        submit_permission_decision(bus, popup, PermissionDecision::AllowAllWritesInSession)?;
+                        state.mode = UiMode::Normal;
+                    }
                 }
                 KeyCode::Enter => {
                     let decision = match *selected {
-                        0 => PermissionDecision::AlwaysAllow,
-                        1 => PermissionDecision::AlwaysDeny,
-                        2 => PermissionDecision::AllowOnce,
-                        _ => PermissionDecision::AlwaysDeny,
+                        0 => PermissionDecision::AllowOnce,
+                        1 => if has_command {
+                            PermissionDecision::AllowCommandForProject
+                        } else if *is_read_only {
+                            PermissionDecision::AllowAllReadsInSession
+                        } else {
+                            PermissionDecision::AllowAllWritesInSession
+                        },
+                        2 => PermissionDecision::Ask,
+                        _ => PermissionDecision::Ask,
                     };
                     submit_permission_decision(bus, popup, decision)?;
                     state.mode = UiMode::Normal;

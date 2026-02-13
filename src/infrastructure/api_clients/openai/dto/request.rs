@@ -141,7 +141,7 @@ impl RequestDTO {
             tool_choice: "auto".to_string(),
             parallel_tool_calls: false,
             store: false,
-            stream: false,
+            stream: true,
         }
     }
 }

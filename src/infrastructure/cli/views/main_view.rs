@@ -144,7 +144,13 @@ fn render_popup(
                 .map(|entry| {
                     let label = match entry {
                         ModelEntry::Local { name, .. } => format!("Local: {}", name),
-                        ModelEntry::OpenAi { name } => format!("OpenAI: {}", name),
+                        ModelEntry::OpenAi { name, auth_type } => {
+                            if auth_type.trim().is_empty() {
+                                format!("OpenAI: {}", name)
+                            } else {
+                                format!("OpenAI: {} ({})", name, auth_type)
+                            }
+                        }
                         ModelEntry::OpenAiSelect => "OpenAI: Select New Model".to_string(),
                         ModelEntry::Loading => "Loading models...".to_string(),
                         ModelEntry::Empty => "No models available".to_string(),
@@ -272,6 +278,8 @@ fn render_popup(
                 *openai_tracing,
                 *web_search,
                 *max_tool_calls,
+                &state.settings.auth_method,
+                state.settings.oauth_token_expiry,
                 theme,
             );
         }
@@ -423,7 +431,6 @@ fn render_popup(
             paths,
             scope,
             selected,
-            is_read_only,
             ..
         } => {
             permissions::render(
@@ -435,8 +442,35 @@ fn render_popup(
                 scope,
                 *selected,
                 theme,
-                *is_read_only,
             );
+        }
+        PopupState::AuthMethodSelect { selected } => {
+            let height = 7u16;
+            let width = min(
+                (size.width as f32 * 0.7) as u16,
+                size.width.saturating_sub(2),
+            );
+            let area = centered_rect(size, width, height);
+            frame.render_widget(Clear, area);
+
+            let api_key_item = ListItem::new(Line::from(Span::styled(
+                "API Key",
+                Style::default().fg(theme.info_text),
+            )));
+            let oauth_item = ListItem::new(Line::from(Span::styled(
+                "ChatGPT Plus (OAuth)",
+                Style::default().fg(theme.info_text),
+            )));
+            let list = List::new(vec![api_key_item, oauth_item])
+                .highlight_style(
+                    Style::default()
+                        .fg(theme.active)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .block(panel_block(theme, theme.panel, PANEL_PADDING))
+                .highlight_symbol("> ");
+            let mut list_state = list_state(*selected);
+            frame.render_stateful_widget(list, area, &mut list_state);
         }
         PopupState::ContinueSelect { sessions, selected } => {
             if sessions.is_empty() {
@@ -496,7 +530,7 @@ fn render_popup(
 #[derive(Debug, Clone)]
 pub enum ModelEntry {
     Local { name: String, path: String },
-    OpenAi { name: String },
+    OpenAi { name: String, auth_type: String },
     OpenAiSelect,
     Loading,
     Empty,
@@ -517,6 +551,7 @@ pub fn model_entries(state: &UiState) -> Vec<ModelEntry> {
     for model in &state.models.openai {
         entries.push(ModelEntry::OpenAi {
             name: model.name.clone(),
+            auth_type: model.auth_type.clone(),
         });
     }
     entries.push(ModelEntry::OpenAiSelect);

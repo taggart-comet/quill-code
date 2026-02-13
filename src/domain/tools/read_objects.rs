@@ -202,7 +202,12 @@ impl Tool for ReadObjects {
         let input = match self.load_input() {
             Ok(input) => input,
             Err(e) => {
-                return ToolResult::error(self.name().to_string(), String::new(), e.to_string(), String::new())
+                return ToolResult::error(
+                    self.name().to_string(),
+                    String::new(),
+                    e.to_string(),
+                    String::new(),
+                )
             }
         };
 
@@ -213,7 +218,12 @@ impl Tool for ReadObjects {
                 Self::format_output(lang, results),
                 input.call_id,
             ),
-            Err(e) => ToolResult::error(self.name().to_string(), input.raw.clone(), e.to_string(), input.call_id),
+            Err(e) => ToolResult::error(
+                self.name().to_string(),
+                input.raw.clone(),
+                e.to_string(),
+                input.call_id,
+            ),
         }
     }
 

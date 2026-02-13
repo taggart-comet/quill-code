@@ -1,8 +1,8 @@
 use super::step::ChainStep;
+use super::step::StepType;
+use crate::domain::todo::TodoList;
 use crate::domain::tools::ToolResult;
 use serde::{Deserialize, Serialize};
-use crate::domain::todo::TodoList;
-use super::step::StepType;
 
 /// Represents an execution chain containing multiple steps
 /// The chain is built incrementally as tools are executed
@@ -36,7 +36,8 @@ impl Chain {
     /// Add a step to the chain after executing a tool
     pub fn add_step(&mut self, result: ToolResult) {
         if result.tool_name() == "update_todo_list" && result.is_successful() {
-            if let Ok(updated_todo_list) = serde_json::from_str::<TodoList>(&result.input_string()) {
+            if let Ok(updated_todo_list) = serde_json::from_str::<TodoList>(&result.input_string())
+            {
                 self.set_todo_list(Some(updated_todo_list));
                 return;
             }
@@ -122,7 +123,7 @@ impl Chain {
             .collect::<Vec<_>>()
             .join("\n")
     }
-    
+
     pub fn set_system_prompt(&mut self, system_prompt: String) {
         self.system_prompt = system_prompt;
     }

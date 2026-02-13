@@ -1,4 +1,6 @@
-use crate::domain::ModelType;
+use crate::domain::{ModelAuthType, ModelType};
+use crate::infrastructure::api_clients::openai::client::AuthToken;
+use crate::infrastructure::auth::refresh_oauth_tokens;
 use crate::infrastructure::db;
 use crate::infrastructure::db::DbPool;
 use crate::infrastructure::event_bus::{LocalModelInfo, ModelSelection};
@@ -29,6 +31,12 @@ pub enum InitError {
 
     #[error("OpenAI model missing api_key")]
     MissingApiKey,
+
+    #[error("OAuth token missing")]
+    MissingOAuthToken,
+
+    #[error("OAuth token expired - please re-authenticate")]
+    OAuthExpired,
 
     #[error("failed to load model engine: {0}")]
     ModelLoadError(String),
@@ -152,11 +160,63 @@ impl InfrastructureInitializer {
             ModelType::OpenAI => {
                 let settings_repo = UserSettingsRepository::new(conn);
                 let settings = settings_repo.get_current().map_err(InitError::Repository)?;
-                let api_key = settings.openai_api_key.ok_or(InitError::MissingApiKey)?;
                 // Use saved model_name, fallback to gpt-4 for backward compatibility
                 let model_name = model.model_name.as_deref().unwrap_or("gpt-4");
-                use crate::infrastructure::inference::openai::OpenAIEngine;
-                OpenAIEngine::new(&api_key, model_name).map_err(|e| InitError::ModelLoadError(e))
+
+                let auth_token = match model.auth_type {
+                    ModelAuthType::OAuth => {
+                        let mut access_token = settings
+                            .oauth_access_token
+                            .ok_or(InitError::MissingOAuthToken)?;
+                        let refresh_token_val = settings
+                            .oauth_refresh_token
+                            .ok_or(InitError::MissingOAuthToken)?;
+                        let account_id = settings.oauth_account_id;
+
+                        // Check if token is expired and refresh if needed
+                        if settings
+                            .oauth_token_expiry
+                            .map(|exp| chrono::Utc::now().timestamp() >= exp)
+                            .unwrap_or(true)
+                        {
+                            log::info!("OAuth token expired at startup, refreshing...");
+                            let new_tokens =
+                                refresh_oauth_tokens(&refresh_token_val).map_err(|e| {
+                                    InitError::ModelLoadError(format!(
+                                        "Token refresh failed: {}",
+                                        e
+                                    ))
+                                })?;
+
+                            settings_repo
+                                .update_oauth_tokens(
+                                    &new_tokens.access_token,
+                                    &new_tokens.refresh_token,
+                                    new_tokens.expires_in,
+                                    new_tokens.account_id.as_deref(),
+                                )
+                                .map_err(InitError::Repository)?;
+
+                            access_token = new_tokens.access_token;
+                        }
+
+                        AuthToken::OAuth {
+                            token: access_token,
+                            account_id,
+                        }
+                    }
+                    ModelAuthType::ApiKey => {
+                        let api_key = settings.openai_api_key.ok_or(InitError::MissingApiKey)?;
+                        AuthToken::ApiKey(api_key)
+                    }
+                    ModelAuthType::Local => {
+                        return Err(InitError::ModelLoadError(
+                            "OpenAI model has local auth_type".to_string(),
+                        ));
+                    }
+                };
+
+                OpenAIEngine::new(auth_token, model_name).map_err(|e| InitError::ModelLoadError(e))
             }
         }
     }
@@ -290,6 +350,11 @@ pub fn apply_model_selection(
                         .unwrap_or_else(|_| PathBuf::from(existing_path));
                     if existing_abs == canonical_path {
                         model_id = Some(model.id);
+                        if model.auth_type != ModelAuthType::Local {
+                            models_repo
+                                .update_auth_type(model.id, ModelAuthType::Local)
+                                .map_err(InitError::Repository)?;
+                        }
                         break;
                     }
                 }
@@ -299,7 +364,13 @@ pub fn apply_model_selection(
                 Some(id) => id,
                 None => {
                     let model = models_repo
-                        .create(ModelType::Local, None, Some(&gguf_path), None)
+                        .create(
+                            ModelType::Local,
+                            None,
+                            Some(&gguf_path),
+                            None,
+                            ModelAuthType::Local,
+                        )
                         .map_err(InitError::Repository)?;
                     model.id
                 }
@@ -324,12 +395,70 @@ pub fn apply_model_selection(
                 .map_err(InitError::Repository)?;
 
             let settings = settings_repo.get_current().map_err(InitError::Repository)?;
-            let resolved_api_key = settings.openai_api_key.ok_or(InitError::MissingApiKey)?;
+            let auth_method = crate::domain::AuthMethod::from_str(&settings.auth_method);
+            let auth_type = ModelAuthType::from_auth_method(&auth_method);
+
+            // Determine auth token based on auth method
+            let auth_token = match auth_type {
+                ModelAuthType::OAuth => {
+                    let mut access_token = settings
+                        .oauth_access_token
+                        .ok_or(InitError::MissingOAuthToken)?;
+                    let refresh_token_val = settings
+                        .oauth_refresh_token
+                        .ok_or(InitError::MissingOAuthToken)?;
+                    let account_id = settings.oauth_account_id;
+
+                    // Check if token is expired and refresh if needed
+                    if settings
+                        .oauth_token_expiry
+                        .map(|exp| chrono::Utc::now().timestamp() >= exp)
+                        .unwrap_or(true)
+                    {
+                        log::info!("OAuth token expired, refreshing...");
+
+                        let new_tokens = refresh_oauth_tokens(&refresh_token_val).map_err(|e| {
+                            InitError::ModelLoadError(format!("Token refresh failed: {}", e))
+                        })?;
+
+                        // Update database with new tokens
+                        settings_repo
+                            .update_oauth_tokens(
+                                &new_tokens.access_token,
+                                &new_tokens.refresh_token,
+                                new_tokens.expires_in,
+                                new_tokens.account_id.as_deref(),
+                            )
+                            .map_err(InitError::Repository)?;
+
+                        access_token = new_tokens.access_token;
+                    }
+
+                    AuthToken::OAuth {
+                        token: access_token,
+                        account_id: account_id,
+                    }
+                }
+                ModelAuthType::ApiKey => {
+                    let key = settings.openai_api_key.ok_or(InitError::MissingApiKey)?;
+                    AuthToken::ApiKey(key)
+                }
+                ModelAuthType::Local => {
+                    return Err(InitError::ModelLoadError(
+                        "OpenAI model has local auth_type".to_string(),
+                    ));
+                }
+            };
 
             let mut model_id = None;
             for model in &existing_models {
                 if model.model_name.as_deref() == Some(&model_name) {
                     model_id = Some(model.id);
+                    if model.auth_type != auth_type {
+                        models_repo
+                            .update_auth_type(model.id, auth_type)
+                            .map_err(InitError::Repository)?;
+                    }
                     break;
                 }
             }
@@ -342,6 +471,11 @@ pub fn apply_model_selection(
                     models_repo
                         .update_model_name(existing.id, Some(&model_name))
                         .map_err(InitError::Repository)?;
+                    if existing.auth_type != auth_type {
+                        models_repo
+                            .update_auth_type(existing.id, auth_type)
+                            .map_err(InitError::Repository)?;
+                    }
                     model_id = Some(existing.id);
                 }
             }
@@ -350,14 +484,14 @@ pub fn apply_model_selection(
                 Some(id) => id,
                 None => {
                     models_repo
-                        .create(ModelType::OpenAI, None, None, Some(&model_name))
+                        .create(ModelType::OpenAI, None, None, Some(&model_name), auth_type)
                         .map_err(InitError::Repository)?
                         .id
                 }
             };
 
-            let engine = OpenAIEngine::new(&resolved_api_key, &model_name)
-                .map_err(InitError::ModelLoadError)?;
+            let engine =
+                OpenAIEngine::new(auth_token, &model_name).map_err(InitError::ModelLoadError)?;
 
             meta_repo
                 .set_last_used_model_id(model_id)

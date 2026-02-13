@@ -11,11 +11,7 @@ pub struct FinishingAllToolset {
 }
 
 impl FinishingAllToolset {
-    pub fn new(
-        session_id: i64,
-        conn: DbPool,
-        event_sender: Sender<AgentToUiEvent>
-    ) -> Self {
+    pub fn new(session_id: i64, conn: DbPool, event_sender: Sender<AgentToUiEvent>) -> Self {
         let mut tools: HashMap<String, Box<dyn Tool>> = HashMap::new();
 
         let patch_files = Box::new(PatchFiles::new());

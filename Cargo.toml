@@ -66,6 +66,12 @@ pulldown-cmark = "0.10"
 arboard = "3.6"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+oauth2 = "4.4"
+tiny_http = "0.12"
+open = "5.0"
+sha2 = "0.10"
+url = "2.5"
+rand = "0.8"
 
 [dev-dependencies]
 

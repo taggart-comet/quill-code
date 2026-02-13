@@ -1,29 +1,29 @@
 mod all;
 mod all_no_todo;
-mod edit;
-mod none;
 mod discover;
+mod edit;
 mod finishing_all;
 mod finishing_all_no_todo;
 mod finishing_discover;
+mod none;
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use crossbeam_channel::Sender;
+use crate::domain::tools::Error;
+use crate::domain::tools::Tool;
+use crate::domain::UserSettings;
+use crate::infrastructure::db::DbPool;
+use crate::infrastructure::event_bus::AgentToUiEvent;
+use crate::infrastructure::inference::ToolCall;
 pub use all::AllToolset;
 pub use all_no_todo::AllNoTodoToolset;
-pub use edit::EditToolset;
-pub use none::NoneToolset;
+use crossbeam_channel::Sender;
 pub use discover::DiscoverToolset;
+pub use edit::EditToolset;
 pub use finishing_all::FinishingAllToolset;
 pub use finishing_all_no_todo::FinishingAllNoTodoToolset;
 pub use finishing_discover::FinishingDiscoverToolset;
-use crate::infrastructure::db::DbPool;
-use crate::domain::tools::Tool;
-use crate::domain::UserSettings;
-use crate::infrastructure::event_bus::AgentToUiEvent;
-use crate::infrastructure::inference::ToolCall;
-use crate::domain::tools::Error;
+pub use none::NoneToolset;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Clone, Copy)]
 pub enum ToolsetType {
@@ -51,12 +51,29 @@ impl ToolsetType {
             ToolsetType::Discover => Arc::new(DiscoverToolset::new(session_id, conn, event_sender)),
             ToolsetType::Edit => Arc::new(EditToolset::new(session_id, conn, event_sender)),
             ToolsetType::All => Arc::new(AllToolset::new(session_id, settings, conn, event_sender)),
-            ToolsetType::AllNoTodo => Arc::new(AllNoTodoToolset::new(session_id, settings, conn, event_sender)),
-            ToolsetType::FinishingAllNoTodo => Arc::new(FinishingAllNoTodoToolset::new(session_id, conn, event_sender)),
+            ToolsetType::AllNoTodo => Arc::new(AllNoTodoToolset::new(
+                session_id,
+                settings,
+                conn,
+                event_sender,
+            )),
+            ToolsetType::FinishingAllNoTodo => Arc::new(FinishingAllNoTodoToolset::new(
+                session_id,
+                conn,
+                event_sender,
+            )),
             ToolsetType::None => Arc::new(NoneToolset::new()),
-            ToolsetType::FinishingAll => Arc::new(FinishingAllToolset::new(session_id, conn, event_sender)),
-            ToolsetType::FinishingDiscover => Arc::new(FinishingDiscoverToolset::new(session_id, conn, event_sender)),
-            ToolsetType::FinishingEdit => Arc::new(EditToolset::new(session_id, conn, event_sender)),
+            ToolsetType::FinishingAll => {
+                Arc::new(FinishingAllToolset::new(session_id, conn, event_sender))
+            }
+            ToolsetType::FinishingDiscover => Arc::new(FinishingDiscoverToolset::new(
+                session_id,
+                conn,
+                event_sender,
+            )),
+            ToolsetType::FinishingEdit => {
+                Arc::new(EditToolset::new(session_id, conn, event_sender))
+            }
         }
     }
 
@@ -102,7 +119,8 @@ pub trait Toolset {
             .map(|t| t.as_ref())
             .ok_or_else(|| Error::Parse(format!("Tool not found: {}", tool_call.name)))?;
 
-        if let Some(err) = tool.parse_input(tool_call.arguments.clone(), tool_call.call_id.clone()) {
+        if let Some(err) = tool.parse_input(tool_call.arguments.clone(), tool_call.call_id.clone())
+        {
             return Err(err);
         }
 

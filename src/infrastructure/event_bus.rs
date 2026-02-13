@@ -1,8 +1,8 @@
-use crate::domain::permissions::PermissionDecision;
+use crate::domain::permissions::UserPermissionDecision;
+use crate::domain::todo::TodoItem;
 use crate::domain::tools::FileChange;
 use crate::domain::AgentModeType;
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use crate::domain::todo::TodoItem;
 
 #[derive(Debug, Clone)]
 pub enum StepPhase {
@@ -33,6 +33,7 @@ pub struct LocalModelInfo {
 pub struct OpenAiModelInfo {
     pub _id: i64,
     pub name: String,
+    pub auth_type: String,
 }
 
 #[derive(Debug, Clone)]
@@ -48,12 +49,13 @@ pub enum UiToAgentEvent {
         mode: AgentModeType, // NEW: Pass mode to agent
         session_id: Option<i64>,
     },
+    CancelRequest,
     SessionContinueEvent {
         session_id: i64,
     },
     PermissionUpdateEvent {
         request_id: u64,
-        decision: PermissionDecision,
+        decision: UserPermissionDecision,
     },
     ShutdownEvent,
     SettingsUpdateEvent {
@@ -109,7 +111,7 @@ pub enum AgentToUiEvent {
 #[derive(Debug, Clone)]
 pub struct PermissionUpdate {
     pub request_id: u64,
-    pub decision: PermissionDecision,
+    pub decision: UserPermissionDecision,
 }
 
 #[derive(Clone, Debug)]

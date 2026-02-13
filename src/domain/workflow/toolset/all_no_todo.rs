@@ -15,7 +15,7 @@ impl AllNoTodoToolset {
         _session_id: i64,
         settings: &UserSettings,
         _conn: DbPool,
-        _event_sender: Sender<AgentToUiEvent>
+        _event_sender: Sender<AgentToUiEvent>,
     ) -> Self {
         let mut tools: HashMap<String, Box<dyn Tool>> = HashMap::new();
 

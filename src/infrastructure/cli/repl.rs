@@ -1,4 +1,4 @@
-use crate::domain::{AgentModeType, ModelType};
+use crate::domain::{AgentModeType, ModelAuthType, ModelType};
 use crate::infrastructure::cli::state::{
     FileChangesDisplay, LoadStatus, PopupState, ProgressEntry, ProgressKind, RequestIndicator,
     RequestStatusDisplay, UiMode, UiState,
@@ -180,9 +180,7 @@ fn handle_agent_event(
                 let can_update = state
                     .last_progress_update
                     .map(|last| {
-                        std::time::Instant::now()
-                            .duration_since(last)
-                            .as_millis()
+                        std::time::Instant::now().duration_since(last).as_millis()
                             >= crate::infrastructure::cli::state::MIN_PROGRESS_DISPLAY_MS
                     })
                     .unwrap_or(true); // Update immediately if no previous update
@@ -236,15 +234,29 @@ fn handle_agent_event(
                 }
             }
 
-            // Only show summary for failures, skip for success
-            if let Some(summary) = summary {
+            // Show failures via summary; for successful requests, fallback to summary
+            // when final_message is missing/empty (common when resuming older sessions).
+            if let Some(summary_text) = summary {
                 if status != RequestStatus::Success {
                     state.push_progress(ProgressEntry {
-                        text: summary,
+                        text: summary_text,
                         kind: finish_kind,
                         active: false,
                         request_id: None,
                     });
+                } else {
+                    let final_is_empty = final_message
+                        .as_ref()
+                        .map(|m| m.trim().is_empty())
+                        .unwrap_or(true);
+                    if final_is_empty {
+                        state.push_progress(ProgressEntry {
+                            text: summary_text,
+                            kind: ProgressKind::Info,
+                            active: false,
+                            request_id: None,
+                        });
+                    }
                 }
             }
             if let Some(message) = final_message {
@@ -339,6 +351,7 @@ pub(crate) fn refresh_models_from_db(conn: &DbPool, state: &mut UiState) -> Resu
                 .map(|name| crate::infrastructure::event_bus::OpenAiModelInfo {
                     _id: model.id,
                     name,
+                    auth_type: model.auth_type.as_str().to_string(),
                 })
         })
         .collect();
@@ -362,6 +375,8 @@ pub(crate) fn refresh_settings_from_db(conn: &DbPool, state: &mut UiState) -> Re
     state.settings.openai_tracing_enabled = settings.openai_tracing_enabled;
     state.settings.web_search_enabled = settings.web_search_enabled;
     state.settings.max_tool_calls_per_request = settings.max_tool_calls_per_request;
+    state.settings.auth_method = crate::domain::AuthMethod::from_str(&settings.auth_method);
+    state.settings.oauth_token_expiry = settings.oauth_token_expiry;
     state.settings.status = LoadStatus::Loaded;
 
     // Get both model name and type
@@ -437,10 +452,23 @@ pub(crate) fn update_model_selection_in_db(
                 })
             });
             let model_id = match existing_model {
-                Some(model) => model.id,
+                Some(model) => {
+                    if model.auth_type != ModelAuthType::Local {
+                        models_repo
+                            .update_auth_type(model.id, ModelAuthType::Local)
+                            .map_err(|e| e.to_string())?;
+                    }
+                    model.id
+                }
                 None => {
                     models_repo
-                        .create(ModelType::Local, None, Some(&gguf_path), None)
+                        .create(
+                            ModelType::Local,
+                            None,
+                            Some(&gguf_path),
+                            None,
+                            ModelAuthType::Local,
+                        )
                         .map_err(|e| e.to_string())?
                         .id
                 }
@@ -457,14 +485,24 @@ pub(crate) fn update_model_selection_in_db(
             let existing_models = models_repo
                 .find_by_type(ModelType::OpenAI)
                 .map_err(|e| e.to_string())?;
+            let settings = settings_repo.get_current().map_err(|e| e.to_string())?;
+            let auth_method = crate::domain::AuthMethod::from_str(&settings.auth_method);
+            let auth_type = ModelAuthType::from_auth_method(&auth_method);
             let model_id = match existing_models
                 .iter()
                 .find(|model| model.model_name.as_deref() == Some(model_name))
             {
-                Some(model) => model.id,
+                Some(model) => {
+                    if model.auth_type != auth_type {
+                        models_repo
+                            .update_auth_type(model.id, auth_type)
+                            .map_err(|e| e.to_string())?;
+                    }
+                    model.id
+                }
                 None => {
                     models_repo
-                        .create(ModelType::OpenAI, None, None, Some(model_name))
+                        .create(ModelType::OpenAI, None, None, Some(model_name), auth_type)
                         .map_err(|e| e.to_string())?
                         .id
                 }
@@ -491,18 +529,63 @@ pub(crate) fn fetch_openai_available_models(
         .map_err(|e| format!("Failed to get connection: {}", e))?;
     let settings_repo = UserSettingsRepository::new(&*conn_guard);
     let settings = settings_repo.get_current().map_err(|e| e.to_string())?;
-    let api_key = match settings.openai_api_key {
-        Some(key) => key,
-        None => {
-            state.models.openai_available =
-                vec!["OpenAI API key is required. Please set it in settings.".to_string()];
-            state.models.openai_available_status = LoadStatus::Loaded;
-            return Ok(());
+
+    let auth_method = crate::domain::AuthMethod::from_str(&settings.auth_method);
+    let auth_token = if auth_method == crate::domain::AuthMethod::OAuth {
+        match (&settings.oauth_access_token, &settings.oauth_account_id) {
+            (Some(token), account_id) => {
+                crate::infrastructure::api_clients::openai::client::AuthToken::OAuth {
+                    token: token.clone(),
+                    account_id: account_id.clone(),
+                }
+            }
+            _ => {
+                state.models.openai_available =
+                    vec!["OAuth token not found. Please re-authenticate.".to_string()];
+                state.models.openai_available_status = LoadStatus::Loaded;
+                return Ok(());
+            }
+        }
+    } else {
+        match &settings.openai_api_key {
+            Some(key) if !key.trim().is_empty() => {
+                crate::infrastructure::api_clients::openai::client::AuthToken::ApiKey(key.clone())
+            }
+            _ => {
+                state.models.openai_available =
+                    vec!["OpenAI API key is required. Please set it in settings.".to_string()];
+                state.models.openai_available_status = LoadStatus::Loaded;
+                return Ok(());
+            }
         }
     };
 
+    // OAuth tokens can't call /v1/models — return known Codex/ChatGPT models instead
+    if auth_method == crate::domain::AuthMethod::OAuth {
+        state.models.openai_available = vec![
+            "gpt-5.3-codex-spark".to_string(),
+            "gpt-5.3-codex".to_string(),
+            "gpt-5.2-codex".to_string(),
+            "gpt-5.2".to_string(),
+            "gpt-5.1-codex-max".to_string(),
+            "gpt-5.1-codex".to_string(),
+            "gpt-5.1".to_string(),
+            "gpt-5-codex".to_string(),
+            "gpt-5-codex-mini".to_string(),
+            "gpt-5".to_string(),
+            "gpt-4.1".to_string(),
+            "gpt-4.1-mini".to_string(),
+            "gpt-4o".to_string(),
+            "gpt-4o-mini".to_string(),
+            "o3".to_string(),
+            "o4-mini".to_string(),
+        ];
+        state.models.openai_available_status = LoadStatus::Loaded;
+        return Ok(());
+    }
+
     state.models.openai_available_status = LoadStatus::Loading;
-    match OpenAIEngine::new_general(&api_key, "gpt-4") {
+    match OpenAIEngine::new_general(auth_token, "gpt-4") {
         Ok(openai) => match openai.fetch_available_models() {
             Ok(models) => {
                 state.models.openai_available = models;
@@ -637,6 +720,7 @@ mod tests {
         state.models.openai = vec![OpenAiModelInfo {
             _id: 1,
             name: "gpt-4".to_string(),
+            auth_type: "api_key".to_string(),
         }];
         let entries = model_entries(&state);
         assert_eq!(entries.len(), 3);

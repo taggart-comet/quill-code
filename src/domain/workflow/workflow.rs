@@ -6,17 +6,17 @@ use crate::domain::bt::GeneralTree;
 use crate::domain::prompting;
 use crate::domain::session::Request;
 use crate::domain::todo::TodoListStatus;
+use crate::domain::workflow::toolset::NoneToolset;
+use crate::domain::workflow::toolset::ToolsetType;
+use crate::domain::AgentModeType;
 use crate::infrastructure::db::DbPool;
 use crate::infrastructure::event_bus::{AgentToUiEvent, StepPhase};
 use crate::infrastructure::inference::InferenceEngine;
-use tokio::runtime::{Builder, Handle};
-use crate::domain::workflow::toolset::NoneToolset;
-use crate::domain::workflow::toolset::ToolsetType;
+use crossbeam_channel::Sender;
 use openai_agents_tracing::{SpanKind, TracingFacade};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use crossbeam_channel::Sender;
-use crate::domain::AgentModeType;
+use tokio::runtime::{Builder, Handle};
 
 /// Main workflow orchestrator that runs LLM-driven coding tasks
 /// Implements an eternal agent loop that:
@@ -48,10 +48,7 @@ impl Workflow {
             toolset: Arc::new(NoneToolset::new()),
             engine,
             chain: Chain::new(),
-            tool_runner: ToolRunner::new(
-                permission_checker,
-                event_sender.clone(),
-            ),
+            tool_runner: ToolRunner::new(permission_checker, event_sender.clone()),
             tracer: None,
             event_sender,
             conn,
@@ -170,17 +167,20 @@ impl Workflow {
         user_prompt_override: Option<String>,
         mode: AgentModeType,
     ) -> Result<(), Error> {
-
         let base_user_prompt = prompting::get_user_prompt(self.engine.get_type(), request);
         let user_prompt = user_prompt_override
             .as_deref()
             .unwrap_or(&base_user_prompt)
             .to_string();
-        self.chain.steps.push(ChainStep::user_message(user_prompt.clone(), request.images().to_vec()));
+        self.chain.steps.push(ChainStep::user_message(
+            user_prompt.clone(),
+            request.images().to_vec(),
+        ));
 
         // Get max_tool_calls from override (for BT mode) or user settings
         let max_tool_calls = max_tool_calls_override.unwrap_or_else(|| {
-            request.user_settings()
+            request
+                .user_settings()
                 .map(|s| s.max_tool_calls_per_request() as usize)
                 .unwrap_or(50)
         });
@@ -189,7 +189,11 @@ impl Workflow {
         let mut tool_call_count = 0;
         let mut current_active_todo = self.chain.todo_list.clone();
         let mut in_finishing_mode = false;
-        let finishing_threshold = if max_tool_calls > 5 { max_tool_calls - 5 } else { max_tool_calls };
+        let finishing_threshold = if max_tool_calls > 5 {
+            max_tool_calls - 5
+        } else {
+            max_tool_calls
+        };
 
         // Eternal agent loop
         for _iteration in 1..=max_tool_calls {
@@ -204,7 +208,11 @@ impl Workflow {
             let remaining_calls = max_tool_calls.saturating_sub(tool_call_count);
 
             // Get base system prompt and inject remaining count
-            let system_prompt = prompting::get_system_prompt(self.engine.get_type(), request.mode(), remaining_calls);
+            let system_prompt = prompting::get_system_prompt(
+                self.engine.get_type(),
+                request.mode(),
+                remaining_calls,
+            );
             self.chain.set_system_prompt(system_prompt.clone());
 
             // Switch to finishing toolset if approaching limit
@@ -280,7 +288,10 @@ impl Workflow {
             // Check if TODO item changed and reset counter if so (BuildFromPlan mode only)
             if mode == AgentModeType::BuildFromPlan && is_update_todo {
                 if self._did_todo_item_change(&current_active_todo) {
-                    log::info!("Active TODO item changed, resetting counter from {} to 0", tool_call_count);
+                    log::info!(
+                        "Active TODO item changed, resetting counter from {} to 0",
+                        tool_call_count
+                    );
                     tool_call_count = 0;
                     current_active_todo = self.chain.todo_list.clone();
 
@@ -364,29 +375,28 @@ impl Workflow {
             .map(|duration| duration.as_nanos())
             .unwrap_or(0);
         let index = (nanos % options.len() as u128) as usize;
-        let _ = self
-            .event_sender
-            .send(AgentToUiEvent::ProgressEvent {
-                step_name: "inference".to_string(),
-                phase: StepPhase::Before,
-                summary: options[index].to_string(),
-            });
+        let _ = self.event_sender.send(AgentToUiEvent::ProgressEvent {
+            step_name: "inference".to_string(),
+            phase: StepPhase::Before,
+            summary: options[index].to_string(),
+        });
     }
 
     /// Detects if the active TODO item has changed
     /// Returns true if the first non-completed item's title is different
     fn _did_todo_item_change(&self, previous_todo: &Option<crate::domain::todo::TodoList>) -> bool {
-        
         // Get first non-completed item from previous TODO list
         let prev_active = previous_todo.as_ref().and_then(|list| {
-            list.items.iter()
+            list.items
+                .iter()
                 .find(|item| item.status != TodoListStatus::Completed)
                 .map(|item| &item.title)
         });
 
         // Get first non-completed item from current TODO list
         let curr_active = self.chain.todo_list.as_ref().and_then(|list| {
-            list.items.iter()
+            list.items
+                .iter()
                 .find(|item| item.status != TodoListStatus::Completed)
                 .map(|item| &item.title)
         });

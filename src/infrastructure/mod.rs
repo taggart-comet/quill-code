@@ -1,4 +1,5 @@
 mod api_clients;
+pub mod auth;
 pub mod cli;
 pub mod db;
 pub mod event_bus;

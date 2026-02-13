@@ -14,7 +14,7 @@ class Cat:
     def pet(self) -> str:
         if self.mood == "happy":
             return f"{self.name} purrs loudly."
-        return f"{self.name} tolerates the petting."
+        return f"{self.name} tolerates the petting with a calm blink."
 
     def begs(self) -> str:
         self.mood = "needy"

@@ -3,12 +3,16 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum PermissionDecision {
-    Ask,                       // Prompt user again
-    AllowOnce,                 // One-time approval
-    AllowAllReadsInSession,    // Session-wide read access
-    AllowAllWritesInSession,   // Session-wide write access
-    AllowCommandForProject,    // Allow specific command for this project (persistent)
+pub enum SystemPermissionDecision {
+    Ask,
+    Allow,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum UserPermissionDecision {
+    AllowOnce,
+    AlwaysAllow,
+    Deny,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -24,9 +28,9 @@ pub struct Permission {
     pub tool_name: String,                // "shell", "file_edit", etc.
     pub command_pattern: Option<String>,  // "rm -rf", "git push", etc.
     pub resource_pattern: Option<String>, // "api.search.brave.com", "/src/**", etc.
-    pub decision: PermissionDecision,     // Allow, Deny, Ask
-    pub scope: PermissionScope,           // Session, Project, Global
-    pub project_id: Option<i32>,          // If project-scoped
+    pub user_decision: UserPermissionDecision,
+    pub scope: PermissionScope,  // Session, Project, Global
+    pub project_id: Option<i32>, // If project-scoped
     pub created_at: DateTime<Utc>,
 }
 
@@ -36,7 +40,7 @@ impl Permission {
         tool_name: String,
         command_pattern: Option<String>,
         resource_pattern: Option<String>,
-        decision: PermissionDecision,
+        decision: UserPermissionDecision,
         scope: PermissionScope,
         project_id: Option<i32>,
     ) -> Self {
@@ -45,88 +49,18 @@ impl Permission {
             tool_name,
             command_pattern,
             resource_pattern,
-            decision,
+            user_decision: decision,
             scope,
             project_id,
             created_at: Utc::now(),
         }
     }
 
-    /// Check if this permission matches the given tool, command, and path
-    pub fn matches(&self, tool: &str, command: Option<&str>, path: Option<&PathBuf>) -> bool {
-        if self.tool_name != tool {
-            return false;
+    pub fn system_decision(self) -> SystemPermissionDecision {
+        if self.user_decision == UserPermissionDecision::AlwaysAllow {
+            return SystemPermissionDecision::Allow;
         }
-
-        // Check command pattern if specified
-        if let (Some(pattern), Some(cmd)) = (&self.command_pattern, command) {
-            if !self.matches_command(pattern, cmd) {
-                return false;
-            }
-        }
-
-        // Check resource pattern if specified
-        if let (Some(pattern), Some(p)) = (&self.resource_pattern, path) {
-            if !self.matches_path(pattern, p) {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    fn matches_command(&self, pattern: &str, command: &str) -> bool {
-        // Simple pattern matching - can be enhanced with regex
-        if pattern.contains('*') {
-            // Basic wildcard matching
-            let pattern_parts: Vec<&str> = pattern.split_whitespace().collect();
-            let command_parts: Vec<&str> = command.split_whitespace().collect();
-
-            if pattern_parts.len() != command_parts.len() {
-                return false;
-            }
-
-            pattern_parts
-                .iter()
-                .zip(command_parts.iter())
-                .all(|(p, c)| *p == "*" || *p == *c)
-        } else {
-            pattern == command
-        }
-    }
-
-    fn matches_path(&self, pattern: &str, path: &PathBuf) -> bool {
-        let path_str = path.to_string_lossy();
-
-        if pattern.contains('*') {
-            // Basic glob matching
-            if pattern.ends_with("/**") {
-                let prefix = pattern.trim_end_matches("/**");
-                path_str.starts_with(prefix)
-            } else if pattern.starts_with("**/") {
-                let suffix = pattern.trim_start_matches("**/");
-                path_str.ends_with(suffix)
-            } else {
-                // Simple wildcard - can be enhanced with proper glob matching
-                path_str.contains(pattern.trim_matches('*'))
-            }
-        } else {
-            path_str == pattern
-        }
-    }
-
-    /// Check if this is a session-wide "allow all reads" permission
-    pub fn is_session_wide_all_reads(&self) -> bool {
-        matches!(self.decision, PermissionDecision::AllowAllReadsInSession)
-            && self.scope == PermissionScope::Session
-            && self.resource_pattern.as_ref().map(|p| p.ends_with("/**")).unwrap_or(false)
-    }
-
-    /// Check if this is a session-wide "allow all writes" permission
-    pub fn is_session_wide_all_writes(&self) -> bool {
-        matches!(self.decision, PermissionDecision::AllowAllWritesInSession)
-            && self.scope == PermissionScope::Session
-            && self.resource_pattern.as_ref().map(|p| p.ends_with("/**")).unwrap_or(false)
+        SystemPermissionDecision::Ask
     }
 }
 
@@ -165,7 +99,7 @@ impl PermissionRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionConfig {
-    pub default_decision: PermissionDecision,
+    pub default_decision: SystemPermissionDecision,
     pub dangerous_commands: Vec<String>,
     pub restricted_paths: Vec<String>,
     pub require_confirmation: bool,
@@ -174,7 +108,7 @@ pub struct PermissionConfig {
 impl Default for PermissionConfig {
     fn default() -> Self {
         Self {
-            default_decision: PermissionDecision::Ask,
+            default_decision: SystemPermissionDecision::Ask,
             dangerous_commands: vec![
                 "rm -rf".to_string(),
                 "sudo".to_string(),
@@ -188,6 +122,7 @@ impl Default for PermissionConfig {
                 "/usr/bin".to_string(),
                 "/bin".to_string(),
                 "/sbin".to_string(),
+                ".env".to_string(),
                 "~/.ssh".to_string(),
                 "~/.aws".to_string(),
                 "~/.gnupg".to_string(),

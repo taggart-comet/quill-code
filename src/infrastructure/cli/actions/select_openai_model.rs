@@ -35,7 +35,7 @@ pub fn handle_model_entry(
             refresh_settings_from_db(conn, state)?;
             state.mode = UiMode::Normal;
         }
-        ModelEntry::OpenAi { name } => {
+        ModelEntry::OpenAi { name, .. } => {
             update_model_selection_in_db(conn, &ModelSelection::OpenAiModel(name.clone()))?;
             let _ = bus
                 .ui_to_agent_tx
@@ -52,21 +52,47 @@ pub fn handle_model_entry(
             state.mode = UiMode::Normal;
         }
         ModelEntry::OpenAiSelect => {
-            if insert_openai_key::api_key_missing(conn)? {
-                insert_openai_key::begin_prompt(state, false);
-            } else {
-                state.models.openai_available_status = LoadStatus::Loading;
-                state.openai_fetch_pending = true;
-                state.mode = UiMode::Popup(PopupState::OpenAiAvailable {
-                    selected: 0,
-                    filter: String::new(),
-                    cursor: 0,
-                });
-            }
+            state.mode = UiMode::Popup(PopupState::AuthMethodSelect { selected: 0 });
         }
         ModelEntry::Loading | ModelEntry::Empty => {}
     }
 
+    Ok(())
+}
+
+pub fn handle_auth_method_api_key(
+    conn: &DbPool,
+    state: &mut UiState,
+) -> Result<(), String> {
+    if insert_openai_key::api_key_missing(conn)? {
+        insert_openai_key::begin_prompt(state, false);
+    } else {
+        state.models.openai_available_status = LoadStatus::Loading;
+        state.openai_fetch_pending = true;
+        state.mode = UiMode::Popup(PopupState::OpenAiAvailable {
+            selected: 0,
+            filter: String::new(),
+            cursor: 0,
+        });
+    }
+    Ok(())
+}
+
+pub fn handle_auth_method_oauth(
+    bus: &EventBus,
+    conn: &DbPool,
+    state: &mut UiState,
+) -> Result<(), String> {
+    use crate::infrastructure::cli::actions::oauth_login;
+    oauth_login::start_oauth_flow(bus, conn, state)?;
+    // After successful OAuth, proceed to model selection
+    state.models.openai_available_status = LoadStatus::Loading;
+    state.openai_fetch_pending = true;
+    state.mode = UiMode::Popup(PopupState::OpenAiAvailable {
+        selected: 0,
+        filter: String::new(),
+        cursor: 0,
+    });
     Ok(())
 }
 

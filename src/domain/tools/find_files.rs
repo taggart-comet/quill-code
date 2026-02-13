@@ -169,7 +169,12 @@ impl Tool for FindFiles {
         let input = match self.load_input() {
             Ok(input) => input,
             Err(e) => {
-                return ToolResult::error(self.name().to_string(), String::new(), e.to_string(), String::new())
+                return ToolResult::error(
+                    self.name().to_string(),
+                    String::new(),
+                    e.to_string(),
+                    String::new(),
+                )
             }
         };
 
@@ -177,7 +182,14 @@ impl Tool for FindFiles {
         let search_root =
             match Self::resolve_search_root(input.root.as_deref(), request.project_root()) {
                 Ok(root) => root,
-                Err(e) => return ToolResult::error(self.name().to_string(), input.raw.clone(), e, input.call_id.clone()),
+                Err(e) => {
+                    return ToolResult::error(
+                        self.name().to_string(),
+                        input.raw.clone(),
+                        e,
+                        input.call_id.clone(),
+                    )
+                }
             };
 
         // Check if search root exists

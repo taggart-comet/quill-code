@@ -1,5 +1,6 @@
 use super::{InferenceEngine, LLMInferenceResult};
 use crate::domain::ModelType;
+use crate::infrastructure::api_clients::openai::client::AuthToken;
 use crate::infrastructure::api_clients::openai::OpenAIClient;
 use crate::infrastructure::InfaError;
 use openai_api_rust::models::ModelsApi;
@@ -12,11 +13,17 @@ pub struct OpenAIEngine {
 }
 
 impl OpenAIEngine {
-    /// Create a new OpenAI engine with the given API key and model
-    pub fn new(api_key: &str, model: &str) -> Result<Arc<dyn InferenceEngine>, String> {
-        let auth = Auth::new(api_key);
+    /// Create a new OpenAI engine with the given auth token and model
+    pub fn new(auth_token: AuthToken, model: &str) -> Result<Arc<dyn InferenceEngine>, String> {
+        // Extract API key string for openai_api_rust client (used for model listing)
+        let api_key_str = match &auth_token {
+            AuthToken::ApiKey(key) => key.clone(),
+            AuthToken::OAuth { token, .. } => token.clone(),
+        };
+
+        let auth = Auth::new(&api_key_str);
         let client = OpenAI::new(auth, "https://api.openai.com/v1/");
-        let responses_client = OpenAIClient::new(api_key.to_string(), model.to_string());
+        let responses_client = OpenAIClient::new(auth_token, model.to_string());
 
         let engine = Arc::new(Self {
             client,
@@ -26,11 +33,17 @@ impl OpenAIEngine {
         Ok(engine as Arc<dyn InferenceEngine>)
     }
 
-    /// Create a new OpenAI engine with the given API key and model
-    pub fn new_general(api_key: &str, model: &str) -> Result<Self, String> {
-        let auth = Auth::new(api_key);
+    /// Create a new OpenAI engine with the given auth token and model
+    pub fn new_general(auth_token: AuthToken, model: &str) -> Result<Self, String> {
+        // Extract API key string for openai_api_rust client (used for model listing)
+        let api_key_str = match &auth_token {
+            AuthToken::ApiKey(key) => key.clone(),
+            AuthToken::OAuth { token, .. } => token.clone(),
+        };
+
+        let auth = Auth::new(&api_key_str);
         let client = OpenAI::new(auth, "https://api.openai.com/v1/");
-        let responses_client = OpenAIClient::new(api_key.to_string(), model.to_string());
+        let responses_client = OpenAIClient::new(auth_token, model.to_string());
 
         let engine = Self {
             client,

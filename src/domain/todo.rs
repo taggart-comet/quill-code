@@ -20,9 +20,15 @@ impl TodoListStatus {
     #[allow(dead_code)]
     pub fn from_str(value: &str) -> Self {
         match value {
-            "pending" | "PENDING" | "planned" | "PLANNED" | "todo" | "TODO" => TodoListStatus::Pending,
-            "in_progress" | "IN_PROGRESS" | "doing" | "DOING" | "started" | "STARTED" => TodoListStatus::InProgress,
-            "completed" | "COMPLETED" | "done" | "DONE" | "finished" | "FINISHED" => TodoListStatus::Completed,
+            "pending" | "PENDING" | "planned" | "PLANNED" | "todo" | "TODO" => {
+                TodoListStatus::Pending
+            }
+            "in_progress" | "IN_PROGRESS" | "doing" | "DOING" | "started" | "STARTED" => {
+                TodoListStatus::InProgress
+            }
+            "completed" | "COMPLETED" | "done" | "DONE" | "finished" | "FINISHED" => {
+                TodoListStatus::Completed
+            }
             &_ => TodoListStatus::Pending,
         }
     }
@@ -42,6 +48,8 @@ pub struct TodoList {
 
 impl TodoList {
     pub fn is_completed(&self) -> bool {
-        self.items.iter().all(|item| item.status == TodoListStatus::Completed)
+        self.items
+            .iter()
+            .all(|item| item.status == TodoListStatus::Completed)
     }
 }

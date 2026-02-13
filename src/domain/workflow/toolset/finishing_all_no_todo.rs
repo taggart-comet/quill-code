@@ -10,11 +10,7 @@ pub struct FinishingAllNoTodoToolset {
 }
 
 impl FinishingAllNoTodoToolset {
-    pub fn new(
-        _session_id: i64,
-        _conn: DbPool,
-        _event_sender: Sender<AgentToUiEvent>
-    ) -> Self {
+    pub fn new(_session_id: i64, _conn: DbPool, _event_sender: Sender<AgentToUiEvent>) -> Self {
         let mut tools: HashMap<String, Box<dyn Tool>> = HashMap::new();
 
         let patch_files = Box::new(PatchFiles::new());

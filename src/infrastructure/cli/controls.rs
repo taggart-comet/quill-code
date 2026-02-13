@@ -1,4 +1,4 @@
-use crate::domain::permissions::PermissionDecision;
+use crate::domain::permissions::UserPermissionDecision;
 use crate::domain::AgentModeType;
 use crate::infrastructure::cli::actions::{
     change_settings, insert_openai_key, select_openai_model,
@@ -24,6 +24,13 @@ pub fn handle_key_event(
     state: &mut UiState,
     key: KeyEvent,
 ) -> Result<(), String> {
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if state.request_in_flight.is_some() {
+            let _ = bus.ui_to_agent_tx.send(UiToAgentEvent::CancelRequest);
+        }
+        return Ok(());
+    }
+
     let mode_snapshot = state.mode.clone();
     match mode_snapshot {
         UiMode::Normal => handle_normal_key(bus, conn, state, key),
@@ -213,8 +220,8 @@ fn handle_normal_key(
             // Enter right_container review mode for whatever is displayed
             let has_file_changes = state.file_changes.is_some()
                 && !state.file_changes.as_ref().unwrap().changes.is_empty();
-            let has_todo_list = state.todo_list.is_some()
-                && !state.todo_list.as_ref().unwrap().items.is_empty();
+            let has_todo_list =
+                state.todo_list.is_some() && !state.todo_list.as_ref().unwrap().items.is_empty();
 
             // Priority: file changes first (if both exist), otherwise whichever exists
             if has_file_changes {
@@ -237,8 +244,8 @@ fn handle_normal_key(
             // Enter right_container review mode for whatever is displayed
             let has_file_changes = state.file_changes.is_some()
                 && !state.file_changes.as_ref().unwrap().changes.is_empty();
-            let has_todo_list = state.todo_list.is_some()
-                && !state.todo_list.as_ref().unwrap().items.is_empty();
+            let has_todo_list =
+                state.todo_list.is_some() && !state.todo_list.as_ref().unwrap().items.is_empty();
 
             // Priority: file changes first (if both exist), otherwise whichever exists
             if has_file_changes {
@@ -568,12 +575,17 @@ fn handle_popup_key(
             }
             _ => {}
         },
-        PopupState::PermissionPrompt { selected, is_read_only, command, .. } => {
+        PopupState::PermissionPrompt {
+            selected,
+            is_read_only,
+            command,
+            ..
+        } => {
             let options_len = permissions::option_count();
             let has_command = command.is_some();
             match key.code {
                 KeyCode::Esc | KeyCode::Char('d') | KeyCode::Char('D') => {
-                    submit_permission_decision(bus, popup, PermissionDecision::Ask)?;
+                    submit_permission_decision(bus, popup, UserPermissionDecision::Deny)?;
                     state.mode = UiMode::Normal;
                 }
                 KeyCode::Up => {
@@ -587,39 +599,45 @@ fn handle_popup_key(
                     }
                 }
                 KeyCode::Char('a') | KeyCode::Char('A') => {
-                    submit_permission_decision(bus, popup, PermissionDecision::AllowOnce)?;
+                    submit_permission_decision(bus, popup, UserPermissionDecision::AllowOnce)?;
                     state.mode = UiMode::Normal;
                 }
                 KeyCode::Char('c') | KeyCode::Char('C') => {
                     if has_command {
-                        submit_permission_decision(bus, popup, PermissionDecision::AllowCommandForProject)?;
+                        submit_permission_decision(
+                            bus,
+                            popup,
+                            UserPermissionDecision::AlwaysAllow,
+                        )?;
                         state.mode = UiMode::Normal;
                     }
                 }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
                     if !has_command && *is_read_only {
-                        submit_permission_decision(bus, popup, PermissionDecision::AllowAllReadsInSession)?;
+                        submit_permission_decision(
+                            bus,
+                            popup,
+                            UserPermissionDecision::AlwaysAllow,
+                        )?;
                         state.mode = UiMode::Normal;
                     }
                 }
                 KeyCode::Char('w') | KeyCode::Char('W') => {
                     if !has_command && !*is_read_only {
-                        submit_permission_decision(bus, popup, PermissionDecision::AllowAllWritesInSession)?;
+                        submit_permission_decision(
+                            bus,
+                            popup,
+                            UserPermissionDecision::AlwaysAllow,
+                        )?;
                         state.mode = UiMode::Normal;
                     }
                 }
                 KeyCode::Enter => {
                     let decision = match *selected {
-                        0 => PermissionDecision::AllowOnce,
-                        1 => if has_command {
-                            PermissionDecision::AllowCommandForProject
-                        } else if *is_read_only {
-                            PermissionDecision::AllowAllReadsInSession
-                        } else {
-                            PermissionDecision::AllowAllWritesInSession
-                        },
-                        2 => PermissionDecision::Ask,
-                        _ => PermissionDecision::Ask,
+                        0 => UserPermissionDecision::AllowOnce,
+                        1 => UserPermissionDecision::AlwaysAllow,
+                        2 => UserPermissionDecision::Deny,
+                        _ => UserPermissionDecision::Deny,
                     };
                     submit_permission_decision(bus, popup, decision)?;
                     state.mode = UiMode::Normal;
@@ -627,6 +645,29 @@ fn handle_popup_key(
                 _ => {}
             }
         }
+        PopupState::AuthMethodSelect { selected } => match key.code {
+            KeyCode::Esc => state.mode = UiMode::Popup(PopupState::ModelSelect { selected: 0 }),
+            KeyCode::Up => {
+                if *selected > 0 {
+                    *selected -= 1;
+                }
+            }
+            KeyCode::Down => {
+                if *selected < 1 {
+                    *selected += 1;
+                }
+            }
+            KeyCode::Enter => match *selected {
+                0 => {
+                    select_openai_model::handle_auth_method_api_key(conn, state)?;
+                }
+                1 => {
+                    select_openai_model::handle_auth_method_oauth(bus, conn, state)?;
+                }
+                _ => {}
+            },
+            _ => {}
+        },
         PopupState::ContinueSelect { sessions, selected } => {
             let count = sessions.len();
             match key.code {
@@ -644,9 +685,9 @@ fn handle_popup_key(
                 KeyCode::Enter => {
                     let session_id = sessions[*selected].id;
                     state.session_id = Some(session_id);
-                    let _ = bus.ui_to_agent_tx.send(UiToAgentEvent::SessionContinueEvent {
-                        session_id,
-                    });
+                    let _ = bus
+                        .ui_to_agent_tx
+                        .send(UiToAgentEvent::SessionContinueEvent { session_id });
                     state.mode = UiMode::Normal;
                 }
                 _ => {}
@@ -862,7 +903,7 @@ fn handle_popup_input(state: &mut UiState, key: KeyEvent) {
 fn submit_permission_decision(
     bus: &EventBus,
     popup: &PopupState,
-    decision: PermissionDecision,
+    decision: UserPermissionDecision,
 ) -> Result<(), String> {
     if let PopupState::PermissionPrompt { request_id, .. } = popup {
         bus.ui_to_agent_tx
@@ -1328,14 +1369,12 @@ fn open_continue_popup(conn: &DbPool, state: &mut UiState) {
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
             .unwrap_or_else(|| "default".to_string());
 
-        let projects_repo =
-            crate::repository::ProjectsRepository::new(&*conn_guard);
+        let projects_repo = crate::repository::ProjectsRepository::new(&*conn_guard);
         let project = projects_repo
             .find_by_name(&project_name)?
             .ok_or_else(|| "not_found".to_string())?;
 
-        let sessions_repo =
-            crate::repository::SessionsRepository::new(&*conn_guard);
+        let sessions_repo = crate::repository::SessionsRepository::new(&*conn_guard);
         let rows = sessions_repo.find_by_project_recent(project.id, 5)?;
 
         if rows.is_empty() {

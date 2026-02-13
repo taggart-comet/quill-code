@@ -846,6 +846,161 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         log::info!("Database migration to version 17 completed");
     }
 
+    // Migration v18: Add OAuth columns to user_settings
+    if current_version < 18 {
+        log::info!("Migrating database from version {} to 18", current_version);
+
+        // Check and add auth_method column
+        let auth_method_exists = conn
+            .prepare(
+                "SELECT name FROM pragma_table_info('user_settings') WHERE name = 'auth_method'",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| row.get::<_, String>(0))
+                    .map(|mut rows| rows.next().is_some())
+            })
+            .unwrap_or(false);
+
+        if !auth_method_exists {
+            log::info!("Adding auth_method column to user_settings table");
+            conn.execute(
+                "ALTER TABLE user_settings ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'api_key'",
+                [],
+            )
+            .map_err(|e| format!("Failed to add auth_method column: {}", e))?;
+        }
+
+        // Check and add oauth_access_token column
+        let oauth_access_token_exists = conn
+            .prepare("SELECT name FROM pragma_table_info('user_settings') WHERE name = 'oauth_access_token'")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| row.get::<_, String>(0))
+                    .map(|mut rows| rows.next().is_some())
+            })
+            .unwrap_or(false);
+
+        if !oauth_access_token_exists {
+            log::info!("Adding oauth_access_token column to user_settings table");
+            conn.execute(
+                "ALTER TABLE user_settings ADD COLUMN oauth_access_token TEXT",
+                [],
+            )
+            .map_err(|e| format!("Failed to add oauth_access_token column: {}", e))?;
+        }
+
+        // Check and add oauth_refresh_token column
+        let oauth_refresh_token_exists = conn
+            .prepare("SELECT name FROM pragma_table_info('user_settings') WHERE name = 'oauth_refresh_token'")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| row.get::<_, String>(0))
+                    .map(|mut rows| rows.next().is_some())
+            })
+            .unwrap_or(false);
+
+        if !oauth_refresh_token_exists {
+            log::info!("Adding oauth_refresh_token column to user_settings table");
+            conn.execute(
+                "ALTER TABLE user_settings ADD COLUMN oauth_refresh_token TEXT",
+                [],
+            )
+            .map_err(|e| format!("Failed to add oauth_refresh_token column: {}", e))?;
+        }
+
+        // Check and add oauth_token_expiry column
+        let oauth_token_expiry_exists = conn
+            .prepare("SELECT name FROM pragma_table_info('user_settings') WHERE name = 'oauth_token_expiry'")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| row.get::<_, String>(0))
+                    .map(|mut rows| rows.next().is_some())
+            })
+            .unwrap_or(false);
+
+        if !oauth_token_expiry_exists {
+            log::info!("Adding oauth_token_expiry column to user_settings table");
+            conn.execute(
+                "ALTER TABLE user_settings ADD COLUMN oauth_token_expiry INTEGER",
+                [],
+            )
+            .map_err(|e| format!("Failed to add oauth_token_expiry column: {}", e))?;
+        }
+
+        // Check and add oauth_account_id column
+        let oauth_account_id_exists = conn
+            .prepare("SELECT name FROM pragma_table_info('user_settings') WHERE name = 'oauth_account_id'")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| row.get::<_, String>(0))
+                    .map(|mut rows| rows.next().is_some())
+            })
+            .unwrap_or(false);
+
+        if !oauth_account_id_exists {
+            log::info!("Adding oauth_account_id column to user_settings table");
+            conn.execute(
+                "ALTER TABLE user_settings ADD COLUMN oauth_account_id TEXT",
+                [],
+            )
+            .map_err(|e| format!("Failed to add oauth_account_id column: {}", e))?;
+        }
+
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '18')",
+            [],
+        )
+        .map_err(|e| format!("Failed to update schema_version: {}", e))?;
+
+        log::info!("Database migration to version 18 completed");
+    }
+
+    // Migration v19: add auth_type to models
+    if current_version < 19 {
+        log::info!("Migrating database from version {} to 19", current_version);
+
+        let auth_type_exists = conn
+            .prepare("SELECT name FROM pragma_table_info('models') WHERE name = 'auth_type'")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| row.get::<_, String>(0))
+                    .map(|mut rows| rows.next().is_some())
+            })
+            .unwrap_or(false);
+
+        if !auth_type_exists {
+            log::info!("Adding auth_type column to models table");
+            conn.execute(
+                "ALTER TABLE models ADD COLUMN auth_type TEXT NOT NULL DEFAULT 'local'",
+                [],
+            )
+            .map_err(|e| format!("Failed to add auth_type column: {}", e))?;
+        }
+
+        let openai_auth_type: String = conn
+            .query_row(
+                "SELECT auth_method FROM user_settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| "api_key".to_string());
+
+        conn.execute(
+            "UPDATE models SET auth_type = 'local' WHERE type = 'local'",
+            [],
+        )
+        .map_err(|e| format!("Failed to backfill local auth_type: {}", e))?;
+
+        conn.execute(
+            "UPDATE models SET auth_type = ? WHERE type = 'openai' AND (auth_type IS NULL OR auth_type = '')",
+            params![openai_auth_type],
+        )
+        .map_err(|e| format!("Failed to backfill OpenAI auth_type: {}", e))?;
+
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '19')",
+            [],
+        )
+        .map_err(|e| format!("Failed to update schema_version: {}", e))?;
+
+        log::info!("Database migration to version 19 completed");
+    }
+
     conn.execute(
         "INSERT OR IGNORE INTO user_settings (id, openai_tracing_enabled, use_behavior_trees, web_search_enabled, max_tool_calls_per_request) VALUES (1, 0, 0, 0, 50)",
         [],

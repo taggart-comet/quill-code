@@ -1,4 +1,4 @@
-use super::types::{Permission, PermissionDecision, PermissionScope};
+use super::types::{Permission, PermissionScope, UserPermissionDecision};
 use crate::infrastructure::db::DbPool;
 use rusqlite::params;
 use thiserror::Error;
@@ -18,7 +18,6 @@ pub trait PermissionStore {
         command_pattern: &str,
         resource_pattern: &str,
     ) -> Result<Option<Permission>, StoreError>;
-    fn find_session_permissions(&self, project_id: i32) -> Result<Vec<Permission>, StoreError>;
 }
 
 pub struct SqlitePermissionStore {
@@ -31,18 +30,6 @@ impl SqlitePermissionStore {
     }
 
     fn row_to_permission(&self, row: &rusqlite::Row) -> Result<Permission, rusqlite::Error> {
-        let decision_str: String = row.get("decision")?;
-        let decision = match decision_str.as_str() {
-            "allow_all_reads_session" => PermissionDecision::AllowAllReadsInSession,
-            "allow_all_writes_session" => PermissionDecision::AllowAllWritesInSession,
-            "allow_command_for_project" => PermissionDecision::AllowCommandForProject,
-            "ask" => PermissionDecision::Ask,
-            "once" => PermissionDecision::AllowOnce,
-            // Handle legacy values gracefully
-            "allow" | "deny" => PermissionDecision::Ask,
-            _ => PermissionDecision::Ask, // Default to ask on error
-        };
-
         let scope_str: String = row.get("scope")?;
         let scope = match scope_str.as_str() {
             "session" => PermissionScope::Session,
@@ -61,7 +48,7 @@ impl SqlitePermissionStore {
             tool_name: row.get("tool_name")?,
             command_pattern: row.get("command_pattern")?,
             resource_pattern: row.get("resource_pattern")?,
-            decision,
+            user_decision: UserPermissionDecision::AlwaysAllow,
             scope,
             project_id: row.get("project_id")?,
             created_at,
@@ -71,12 +58,10 @@ impl SqlitePermissionStore {
 
 impl PermissionStore for SqlitePermissionStore {
     fn create_permission(&self, permission: Permission) -> Result<Permission, StoreError> {
-        let decision_str = match permission.decision {
-            PermissionDecision::AllowAllReadsInSession => "allow_all_reads_session",
-            PermissionDecision::AllowAllWritesInSession => "allow_all_writes_session",
-            PermissionDecision::AllowCommandForProject => "allow_command_for_project",
-            PermissionDecision::Ask => "ask",
-            PermissionDecision::AllowOnce => "once",
+        let decision_str = match permission.user_decision {
+            UserPermissionDecision::AlwaysAllow => "always_allow",
+            UserPermissionDecision::AllowOnce => "allow_once",
+            UserPermissionDecision::Deny => "deny",
         };
 
         let scope_str = match permission.scope {
@@ -159,10 +144,8 @@ impl PermissionStore for SqlitePermissionStore {
         })?;
 
         // Build params list dynamically to match the query
-        let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = vec![
-            Box::new(project_id),
-            Box::new(tool.to_string()),
-        ];
+        let mut param_values: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(project_id), Box::new(tool.to_string())];
 
         if !command_pattern.is_empty() {
             param_values.push(Box::new(command_pattern.to_string()));
@@ -172,10 +155,8 @@ impl PermissionStore for SqlitePermissionStore {
             param_values.push(Box::new(resource_pattern.to_string()));
         }
 
-        let params_refs: Vec<&dyn rusqlite::ToSql> = param_values
-            .iter()
-            .map(|p| p.as_ref())
-            .collect();
+        let params_refs: Vec<&dyn rusqlite::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
 
         let result = conn.query_row(&query, params_refs.as_slice(), |row| {
             self.row_to_permission(row)
@@ -186,32 +167,6 @@ impl PermissionStore for SqlitePermissionStore {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(StoreError::Database(e)),
         }
-    }
-
-    fn find_session_permissions(&self, project_id: i32) -> Result<Vec<Permission>, StoreError> {
-        let conn = self.conn.get().map_err(|e| {
-            StoreError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("Failed to get connection: {}", e),
-                ),
-            )))
-        })?;
-
-        let mut stmt = conn.prepare(
-            "SELECT id, tool_name, command_pattern, resource_pattern, decision, scope,
-             project_id, created_at
-             FROM permissions
-             WHERE project_id = ?1
-               AND scope = 'session'
-               AND decision IN ('allow_all_reads_session', 'allow_all_writes_session')",
-        )?;
-
-        let permissions = stmt
-            .query_map(params![project_id], |row| self.row_to_permission(row))?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(permissions)
     }
 }
 
@@ -238,7 +193,8 @@ mod tests {
                 created_at TEXT NOT NULL
             )",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         pool
     }
@@ -253,7 +209,7 @@ mod tests {
             "test_tool".to_string(),
             None,
             None,
-            PermissionDecision::AllowOnce,
+            UserPermissionDecision::AllowOnce,
             PermissionScope::Project,
             Some(1),
         );
@@ -262,7 +218,10 @@ mod tests {
         // Should find the permission when searching with empty strings
         let result = store.find_permission("test_tool", 1, "", "").unwrap();
         assert!(result.is_some());
-        assert_eq!(result.unwrap().decision, PermissionDecision::AllowOnce);
+        assert_eq!(
+            result.unwrap().user_decision,
+            UserPermissionDecision::AlwaysAllow
+        );
     }
 
     #[test]
@@ -275,16 +234,21 @@ mod tests {
             "test_tool".to_string(),
             Some("echo test".to_string()),
             None,
-            PermissionDecision::Ask,
+            UserPermissionDecision::AlwaysAllow,
             PermissionScope::Project,
             Some(1),
         );
         store.create_permission(permission).unwrap();
 
         // Should find the permission when searching with command and empty resource
-        let result = store.find_permission("test_tool", 1, "echo test", "").unwrap();
+        let result = store
+            .find_permission("test_tool", 1, "echo test", "")
+            .unwrap();
         assert!(result.is_some());
-        assert_eq!(result.unwrap().decision, PermissionDecision::Ask);
+        assert_eq!(
+            result.unwrap().user_decision,
+            UserPermissionDecision::AlwaysAllow
+        );
     }
 
     #[test]
@@ -297,16 +261,21 @@ mod tests {
             "test_tool".to_string(),
             None,
             Some("/path/to/file".to_string()),
-            PermissionDecision::AllowOnce,
+            UserPermissionDecision::AllowOnce,
             PermissionScope::Project,
             Some(1),
         );
         store.create_permission(permission).unwrap();
 
         // Should find the permission when searching with empty command and resource
-        let result = store.find_permission("test_tool", 1, "", "/path/to/file").unwrap();
+        let result = store
+            .find_permission("test_tool", 1, "", "/path/to/file")
+            .unwrap();
         assert!(result.is_some());
-        assert_eq!(result.unwrap().decision, PermissionDecision::AllowOnce);
+        assert_eq!(
+            result.unwrap().user_decision,
+            UserPermissionDecision::AlwaysAllow
+        );
     }
 
     #[test]
@@ -319,16 +288,21 @@ mod tests {
             "test_tool".to_string(),
             Some("rm -rf".to_string()),
             Some("/etc/passwd".to_string()),
-            PermissionDecision::Ask,
+            UserPermissionDecision::AlwaysAllow,
             PermissionScope::Project,
             Some(1),
         );
         store.create_permission(permission).unwrap();
 
         // Should find the permission when searching with both patterns
-        let result = store.find_permission("test_tool", 1, "rm -rf", "/etc/passwd").unwrap();
+        let result = store
+            .find_permission("test_tool", 1, "rm -rf", "/etc/passwd")
+            .unwrap();
         assert!(result.is_some());
-        assert_eq!(result.unwrap().decision, PermissionDecision::Ask);
+        assert_eq!(
+            result.unwrap().user_decision,
+            UserPermissionDecision::AlwaysAllow
+        );
     }
 
     #[test]
@@ -341,7 +315,7 @@ mod tests {
             "test_tool".to_string(),
             Some("echo test".to_string()),
             None,
-            PermissionDecision::AllowOnce,
+            UserPermissionDecision::AllowOnce,
             PermissionScope::Project,
             Some(1),
         );
@@ -353,47 +327,23 @@ mod tests {
     }
 
     #[test]
-    fn test_find_session_permissions() {
+    fn test_find_permission_different_project_no_match() {
         let pool = setup_test_db();
         let store = SqlitePermissionStore::new(pool.clone());
 
-        // Create session-wide read permission
-        let read_perm = Permission::new(
+        // Create permission for project 1
+        let permission = Permission::new(
             "read_tool".to_string(),
             None,
-            Some("/project/**".to_string()),
-            PermissionDecision::AllowAllReadsInSession,
-            PermissionScope::Session,
-            Some(1),
-        );
-        store.create_permission(read_perm).unwrap();
-
-        // Create session-wide write permission
-        let write_perm = Permission::new(
-            "write_tool".to_string(),
             None,
-            Some("/project/**".to_string()),
-            PermissionDecision::AllowAllWritesInSession,
-            PermissionScope::Session,
-            Some(1),
-        );
-        store.create_permission(write_perm).unwrap();
-
-        // Create non-session permission (should not be returned)
-        let other_perm = Permission::new(
-            "other_tool".to_string(),
-            None,
-            None,
-            PermissionDecision::AllowOnce,
+            UserPermissionDecision::AlwaysAllow,
             PermissionScope::Project,
             Some(1),
         );
-        store.create_permission(other_perm).unwrap();
+        store.create_permission(permission).unwrap();
 
-        // Find session permissions
-        let result = store.find_session_permissions(1).unwrap();
-        assert_eq!(result.len(), 2);
-        assert!(result.iter().any(|p| matches!(p.decision, PermissionDecision::AllowAllReadsInSession)));
-        assert!(result.iter().any(|p| matches!(p.decision, PermissionDecision::AllowAllWritesInSession)));
+        // Should NOT find when searching for project 2
+        let result = store.find_permission("read_tool", 2, "", "").unwrap();
+        assert!(result.is_none());
     }
 }

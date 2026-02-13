@@ -10,6 +10,11 @@ pub struct UserSettingsRow {
     pub web_search_enabled: bool,
     pub brave_api_key: Option<String>,
     pub max_tool_calls_per_request: i32,
+    pub auth_method: String,
+    pub oauth_access_token: Option<String>,
+    pub oauth_refresh_token: Option<String>,
+    pub oauth_token_expiry: Option<i64>,
+    pub oauth_account_id: Option<String>,
 }
 
 impl UserSettingsRow {
@@ -23,6 +28,13 @@ impl UserSettingsRow {
             web_search_enabled: row.get::<_, i64>(5)? != 0,
             brave_api_key: row.get(6)?,
             max_tool_calls_per_request: row.get(7)?,
+            auth_method: row
+                .get::<_, Option<String>>(8)?
+                .unwrap_or_else(|| "api_key".to_string()),
+            oauth_access_token: row.get(9)?,
+            oauth_refresh_token: row.get(10)?,
+            oauth_token_expiry: row.get(11)?,
+            oauth_account_id: row.get(12)?,
         })
     }
 }
@@ -46,7 +58,7 @@ impl<'a> UserSettingsRepository<'a> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, openai_api_key, openai_tracing_enabled, use_behavior_trees, current_model_id, web_search_enabled, brave_api_key, max_tool_calls_per_request FROM user_settings WHERE id = ?",
+                "SELECT id, openai_api_key, openai_tracing_enabled, use_behavior_trees, current_model_id, web_search_enabled, brave_api_key, max_tool_calls_per_request, auth_method, oauth_access_token, oauth_refresh_token, oauth_token_expiry, oauth_account_id FROM user_settings WHERE id = ?",
             )
             .map_err(|e| e.to_string())?;
 
@@ -62,7 +74,7 @@ impl<'a> UserSettingsRepository<'a> {
         self.ensure_row()?;
         self.conn
             .execute(
-                "UPDATE user_settings SET openai_api_key = ? WHERE id = 1",
+                "UPDATE user_settings SET openai_api_key = ?, auth_method = 'api_key' WHERE id = 1",
                 params![api_key],
             )
             .map_err(|e| e.to_string())?;
@@ -109,6 +121,49 @@ impl<'a> UserSettingsRepository<'a> {
             .execute(
                 "UPDATE user_settings SET max_tool_calls_per_request = ? WHERE id = 1",
                 params![value],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn update_oauth_tokens(
+        &self,
+        access_token: &str,
+        refresh_token: &str,
+        expires_in: i64,
+        account_id: Option<&str>,
+    ) -> Result<(), String> {
+        self.ensure_row()?;
+        let expiry = chrono::Utc::now().timestamp() + expires_in;
+        self.conn
+            .execute(
+                "UPDATE user_settings SET
+                 oauth_access_token = ?,
+                 oauth_refresh_token = ?,
+                 oauth_token_expiry = ?,
+                 oauth_account_id = ?,
+                 auth_method = 'oauth',
+                 openai_api_key = NULL
+                 WHERE id = 1",
+                params![access_token, refresh_token, expiry, account_id],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn clear_oauth_tokens(&self) -> Result<(), String> {
+        self.ensure_row()?;
+        self.conn
+            .execute(
+                "UPDATE user_settings SET
+                 oauth_access_token = NULL,
+                 oauth_refresh_token = NULL,
+                 oauth_token_expiry = NULL,
+                 oauth_account_id = NULL,
+                 auth_method = 'api_key'
+                 WHERE id = 1",
+                [],
             )
             .map_err(|e| e.to_string())?;
         Ok(())

@@ -1,4 +1,4 @@
-use crate::domain::ModelType;
+use crate::domain::{ModelAuthType, ModelType};
 use rusqlite::{params, Connection, Row};
 
 /// Raw database row for models table
@@ -9,6 +9,7 @@ pub struct ModelRow {
     pub _api_key: Option<String>,
     pub gguf_file_path: Option<String>,
     pub model_name: Option<String>,
+    pub auth_type: ModelAuthType,
     pub _date_added: String,
 }
 
@@ -16,6 +17,17 @@ impl ModelRow {
     fn from_row(row: &Row) -> Result<Self, rusqlite::Error> {
         let model_type_str: String = row.get(1)?;
         let model_type = ModelType::from_str(&model_type_str).unwrap_or(ModelType::Local);
+        let auth_type_str: Option<String> = row.get(5)?;
+        let auth_type = match auth_type_str.as_deref() {
+            Some(value) => ModelAuthType::from_str(value),
+            None => {
+                if model_type == ModelType::Local {
+                    ModelAuthType::Local
+                } else {
+                    ModelAuthType::ApiKey
+                }
+            }
+        };
 
         Ok(Self {
             id: row.get(0)?,
@@ -23,7 +35,8 @@ impl ModelRow {
             _api_key: row.get(2)?,
             gguf_file_path: row.get(3)?,
             model_name: row.get(4)?,
-            _date_added: row.get(5)?,
+            auth_type,
+            _date_added: row.get(6)?,
         })
     }
 }
@@ -40,7 +53,7 @@ impl<'a> ModelsRepository<'a> {
     pub fn find_by_id(&self, id: i64) -> Result<Option<ModelRow>, String> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, type, api_key, gguf_file_path, model_name, date_added FROM models WHERE id = ?")
+            .prepare("SELECT id, type, api_key, gguf_file_path, model_name, auth_type, date_added FROM models WHERE id = ?")
             .map_err(|e| e.to_string())?;
 
         let result = stmt
@@ -54,7 +67,7 @@ impl<'a> ModelsRepository<'a> {
     pub fn find_by_type(&self, model_type: ModelType) -> Result<Vec<ModelRow>, String> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, type, api_key, gguf_file_path, model_name, date_added FROM models WHERE type = ? ORDER BY date_added DESC")
+            .prepare("SELECT id, type, api_key, gguf_file_path, model_name, auth_type, date_added FROM models WHERE type = ? ORDER BY date_added DESC")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
@@ -75,13 +88,21 @@ impl<'a> ModelsRepository<'a> {
         api_key: Option<&str>,
         gguf_file_path: Option<&str>,
         model_name: Option<&str>,
+        auth_type: ModelAuthType,
     ) -> Result<ModelRow, String> {
         let date_added = chrono_now();
 
         self.conn
             .execute(
-                "INSERT INTO models (type, api_key, gguf_file_path, model_name, date_added) VALUES (?, ?, ?, ?, ?)",
-                params![model_type.as_str(), api_key, gguf_file_path, model_name, date_added],
+                "INSERT INTO models (type, api_key, gguf_file_path, model_name, auth_type, date_added) VALUES (?, ?, ?, ?, ?, ?)",
+                params![
+                    model_type.as_str(),
+                    api_key,
+                    gguf_file_path,
+                    model_name,
+                    auth_type.as_str(),
+                    date_added
+                ],
             )
             .map_err(|e| e.to_string())?;
 
@@ -93,8 +114,21 @@ impl<'a> ModelsRepository<'a> {
             _api_key: api_key.map(|s| s.to_string()),
             gguf_file_path: gguf_file_path.map(|s| s.to_string()),
             model_name: model_name.map(|s| s.to_string()),
+            auth_type,
             _date_added: date_added,
         })
+    }
+
+    pub fn update_auth_type(&self, id: i64, auth_type: ModelAuthType) -> Result<bool, String> {
+        let rows_affected = self
+            .conn
+            .execute(
+                "UPDATE models SET auth_type = ? WHERE id = ?",
+                params![auth_type.as_str(), id],
+            )
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows_affected > 0)
     }
 
     pub fn update_model_name(&self, id: i64, model_name: Option<&str>) -> Result<bool, String> {

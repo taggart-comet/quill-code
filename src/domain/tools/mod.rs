@@ -47,7 +47,7 @@ pub struct ToolResult {
     tool_name: String,
     call_id: String,
     pub(crate) input: String,
-is_successful: bool,
+    is_successful: bool,
     output: String,
     error_message: String,
     file_changes: Option<Vec<FileChange>>,
@@ -62,7 +62,7 @@ impl ToolResult {
             output,
             error_message: String::new(),
             file_changes: None,
-            call_id
+            call_id,
         }
     }
 
@@ -74,7 +74,7 @@ impl ToolResult {
             output: String::new(),
             error_message: message.into(),
             file_changes: None,
-            call_id
+            call_id,
         }
     }
 
@@ -161,6 +161,7 @@ pub trait Tool: Send + Sync {
     fn is_read_only(&self) -> bool {
         false
     }
+    #[allow(dead_code)]
     fn skip_permission_check(&self) -> bool {
         false
     }

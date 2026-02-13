@@ -8,6 +8,7 @@ use crate::repository::SessionRequestRow;
 pub struct SessionRequest {
     prompt: String,
     result_summary: Option<String>,
+    steps_log: Option<String>,
     #[allow(dead_code)]
     mode: AgentModeType,
 }
@@ -23,6 +24,10 @@ impl SessionRequest {
         self.result_summary.as_deref()
     }
 
+    pub fn steps_log(&self) -> Option<&str> {
+        self.steps_log.as_deref()
+    }
+
     #[allow(dead_code)]
     pub fn mode(&self) -> AgentModeType {
         self.mode
@@ -32,6 +37,7 @@ impl SessionRequest {
         Self {
             prompt: row.prompt,
             result_summary: row.result_summary,
+            steps_log: row._steps_log,
             mode: row.mode,
         }
     }

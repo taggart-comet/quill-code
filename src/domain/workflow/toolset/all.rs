@@ -16,7 +16,7 @@ impl AllToolset {
         session_id: i64,
         settings: &UserSettings,
         conn: DbPool,
-        event_sender: Sender<AgentToUiEvent>
+        event_sender: Sender<AgentToUiEvent>,
     ) -> Self {
         let mut tools: HashMap<String, Box<dyn Tool>> = HashMap::new();
 

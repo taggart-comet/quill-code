@@ -85,9 +85,10 @@ impl StartupService {
         let naming_prompt = session_naming_prompt(self.engine.get_type(), &prompt_preview);
 
         let mut chain = Chain::new();
-        chain
-            .steps
-            .push(ChainStep::user_message(naming_prompt.parse().unwrap(), Vec::new()));
+        chain.steps.push(ChainStep::user_message(
+            naming_prompt.parse().unwrap(),
+            Vec::new(),
+        ));
         let session_name = match self.engine.generate(&[], &chain, &[], None) {
             Ok(raw) => {
                 log::debug!("Raw session name response: {:?}", raw.summary);
@@ -196,7 +197,8 @@ impl StartupService {
             .map(SessionRequest::from_row)
             .collect();
 
-        let session = Session::load_with_requests(session_row, project, requests);
+        let mut session = Session::load_with_requests(session_row, project, requests);
+        session.set_conn(self.conn.clone());
         Ok(session)
     }
 }

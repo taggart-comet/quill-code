@@ -7,8 +7,8 @@ use crate::infrastructure::db::DbPool;
 use crate::infrastructure::AgentToUiEvent;
 use crate::infrastructure::InferenceEngine;
 use crate::repository::{
-    ModelsRepository, SessionRequestStepsRepository, SessionRequestsRepository,
-    TodoListRepository, UserSettingsRepository,
+    ModelsRepository, SessionRequestStepsRepository, SessionRequestsRepository, TodoListRepository,
+    UserSettingsRepository,
 };
 use crossbeam_channel::Sender;
 use std::sync::Arc;
@@ -97,7 +97,9 @@ impl SessionService {
                 match repo.get_by_session(session.id()) {
                     Ok(Some(row)) => {
                         match serde_json::from_str::<crate::domain::todo::TodoList>(&row.content) {
-                            Ok(todo_list) => !todo_list.is_completed() && !todo_list.items.is_empty(),
+                            Ok(todo_list) => {
+                                !todo_list.is_completed() && !todo_list.items.is_empty()
+                            }
                             Err(_) => false,
                         }
                     }
@@ -133,8 +135,7 @@ impl SessionService {
 
         // Run the workflow
         let result: Result<Chain, WorkflowError> = if self.use_behavior_trees {
-            self.workflow
-                .run_using_bt(&mut request, cancel)
+            self.workflow.run_using_bt(&mut request, cancel)
         } else {
             self.workflow
                 .run(&mut request, cancel, effective_mode)

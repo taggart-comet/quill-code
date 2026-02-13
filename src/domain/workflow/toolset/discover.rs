@@ -1,9 +1,9 @@
 use crate::domain::tools::*;
 use crate::domain::workflow::toolset::Toolset;
 use crate::infrastructure::db::DbPool;
-use std::collections::HashMap;
-use crossbeam_channel::Sender;
 use crate::infrastructure::AgentToUiEvent;
+use crossbeam_channel::Sender;
+use std::collections::HashMap;
 
 /// General toolset containing read-only and utility tools
 pub struct DiscoverToolset {

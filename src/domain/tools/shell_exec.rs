@@ -28,6 +28,35 @@ struct ShellExecInputParsed {
     call_id: String,
 }
 
+fn is_allowed_read_only_command(command: &str) -> bool {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    if trimmed.contains(';')
+        || trimmed.contains("&&")
+        || trimmed.contains("||")
+        || trimmed.contains('|')
+        || trimmed.contains('>')
+        || trimmed.contains('<')
+    {
+        return false;
+    }
+
+    let mut parts = trimmed.split_whitespace();
+    let first = parts.next().unwrap_or_default();
+    let args: Vec<&str> = parts.collect();
+
+    match first {
+        "rg" | "grep" | "glob" | "cat" | "head" | "tail" | "less" | "more" | "wc" | "cut"
+        | "sort" | "uniq" | "find" | "ls" | "tree" | "stat" | "file" | "awk" | "pwd"
+        | "which" | "type" => true,
+        "sed" => args.iter().any(|arg| *arg == "-n" || *arg == "--quiet" || *arg == "--silent"),
+        _ => false,
+    }
+}
+
 impl Tool for ShellExec {
     fn name(&self) -> &'static str {
         "shell_exec"
@@ -135,7 +164,12 @@ impl Tool for ShellExec {
             if !stderr.is_empty() {
                 result.push_str(&format!("[stderr]: {}", stderr));
             }
-            return ToolResult::error(self.name().to_string(), input.raw.clone(), result, input.call_id.clone());
+            return ToolResult::error(
+                self.name().to_string(),
+                input.raw.clone(),
+                result,
+                input.call_id.clone(),
+            );
         };
 
         ToolResult::ok(self.name().to_string(), input.raw, result, input.call_id)
@@ -251,6 +285,15 @@ DO NOT use it to change files, use `patch_files` tool for this.",
 
         paths
     }
+
+    fn is_read_only(&self) -> bool {
+        self.input
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|input| is_allowed_read_only_command(&input.command))
+            .unwrap_or(false)
+    }
 }
 
 impl ShellExec {
@@ -346,7 +389,10 @@ mod tests {
 
         let tool = ShellExec::new();
         assert!(tool
-            .parse_input(r#"{"command":"echo hello"}"#.to_string(), "call-id".to_string())
+            .parse_input(
+                r#"{"command":"echo hello"}"#.to_string(),
+                "call-id".to_string()
+            )
             .is_none());
         let result = tool.work(&request);
 
@@ -388,10 +434,13 @@ mod tests {
 
         let tool = ShellExec::new();
         assert!(tool
-            .parse_input(format!(
-                r#"{{"command":"pwd","working_dir":"{}"}}"#,
-                subdir.display()
-            ), "call-id".to_string())
+            .parse_input(
+                format!(
+                    r#"{{"command":"pwd","working_dir":"{}"}}"#,
+                    subdir.display()
+                ),
+                "call-id".to_string()
+            )
             .is_none());
         let result = tool.work(&request);
 
@@ -412,7 +461,10 @@ mod tests {
 
         let tool = ShellExec::new();
         assert!(tool
-            .parse_input(r#"{"command":"pwd","working_dir":"/tmp"}"#.to_string(), "call-id".to_string())
+            .parse_input(
+                r#"{"command":"pwd","working_dir":"/tmp"}"#.to_string(),
+                "call-id".to_string()
+            )
             .is_none());
         let result = tool.work(&request);
 
@@ -450,7 +502,10 @@ mod tests {
 
         let tool = ShellExec::new();
         assert!(tool
-            .parse_input(r#"{"command":"echo error >&2 && exit 1"}"#.to_string(), "call-id".to_string())
+            .parse_input(
+                r#"{"command":"echo error >&2 && exit 1"}"#.to_string(),
+                "call-id".to_string()
+            )
             .is_none());
         let result = tool.work(&request);
 
@@ -478,10 +533,13 @@ mod tests {
 
         let tool = ShellExec::new();
         assert!(tool
-            .parse_input(format!(
-                r#"{{"command":"echo 'test content' > {}"}}"#,
-                file_path.display()
-            ), "call-id".to_string())
+            .parse_input(
+                format!(
+                    r#"{{"command":"echo 'test content' > {}"}}"#,
+                    file_path.display()
+                ),
+                "call-id".to_string()
+            )
             .is_none());
         let result = tool.work(&request);
 
@@ -503,7 +561,10 @@ mod tests {
 
         let tool = ShellExec::new();
         assert!(tool
-            .parse_input(r#"{"command":"echo 'hello world' | tr 'a-z' 'A-Z'"}"#.to_string(), "call-id".to_string())
+            .parse_input(
+                r#"{"command":"echo 'hello world' | tr 'a-z' 'A-Z'"}"#.to_string(),
+                "call-id".to_string()
+            )
             .is_none());
         let result = tool.work(&request);
 
@@ -512,5 +573,65 @@ mod tests {
             "Expected uppercase, got: {}",
             result.output_string()
         );
+    }
+
+    #[test]
+    fn test_shell_exec_is_read_only_allows_read_commands() {
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(
+                r#"{"command":"rg -n foo src"}"#.to_string(),
+                "call-id".to_string()
+            )
+            .is_none());
+        assert!(tool.is_read_only());
+
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(
+                r#"{"command":"grep -n foo file.txt"}"#.to_string(),
+                "call-id".to_string()
+            )
+            .is_none());
+        assert!(tool.is_read_only());
+
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(
+                r#"{"command":"sed -n '1,10p' file.txt"}"#.to_string(),
+                "call-id".to_string()
+            )
+            .is_none());
+        assert!(tool.is_read_only());
+    }
+
+    #[test]
+    fn test_shell_exec_is_read_only_rejects_write_or_compound() {
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(
+                r#"{"command":"sed '1,10p' file.txt"}"#.to_string(),
+                "call-id".to_string()
+            )
+            .is_none());
+        assert!(!tool.is_read_only());
+
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(
+                r#"{"command":"echo hi > out.txt"}"#.to_string(),
+                "call-id".to_string()
+            )
+            .is_none());
+        assert!(!tool.is_read_only());
+
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(
+                r#"{"command":"echo hi && rg -n foo src"}"#.to_string(),
+                "call-id".to_string()
+            )
+            .is_none());
+        assert!(!tool.is_read_only());
     }
 }

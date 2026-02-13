@@ -1,13 +1,12 @@
-use crate::domain::permissions::{PermissionConfig, PermissionDecision, PermissionPrompter};
+use crate::domain::permissions::{PermissionConfig, PermissionPrompter, UserPermissionDecision};
 use crate::domain::{CancellationToken, SessionService, StartupService};
 use crate::infrastructure::db::DbPool;
 use crate::infrastructure::event_bus::{
-    AgentToUiEvent, EventBus, ImageAttachment, PermissionUpdate, RequestStatus, StepPhase, UiToAgentEvent,
+    AgentToUiEvent, EventBus, ImageAttachment, PermissionUpdate, RequestStatus, StepPhase,
+    UiToAgentEvent,
 };
 use crate::infrastructure::inference::InferenceEngine;
-use crate::infrastructure::init::{
-    apply_model_selection, update_openai_api_key,
-};
+use crate::infrastructure::init::{apply_model_selection, update_openai_api_key};
 use crate::repository::UserSettingsRepository;
 use crate::{domain, infrastructure};
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
@@ -18,11 +17,7 @@ use std::sync::Arc;
 use std::thread;
 
 /// Helper function to send a failure event to the UI
-fn send_failure_event(
-    tx: &Sender<AgentToUiEvent>,
-    request_id: u64,
-    error: impl Into<String>,
-) {
+fn send_failure_event(tx: &Sender<AgentToUiEvent>, request_id: u64, error: impl Into<String>) {
     let _ = tx.send(AgentToUiEvent::RequestFinishedEvent {
         request_id,
         status: RequestStatus::Failure,
@@ -85,7 +80,12 @@ pub struct EventController {
     cancel_token: CancellationToken,
     permission_response_tx: Option<Sender<PermissionUpdate>>,
     request_counter: u64,
-    pending_request: Option<(String, Vec<ImageAttachment>, crate::domain::AgentModeType, Option<i64>)>,
+    pending_request: Option<(
+        String,
+        Vec<ImageAttachment>,
+        crate::domain::AgentModeType,
+        Option<i64>,
+    )>,
 }
 
 impl EventController {
@@ -188,20 +188,74 @@ impl EventController {
                                 }
                             };
 
-                            if let Some(last_request) = requests.last() {
-                                let label = request_label(&last_request.prompt);
-                                let status = match &last_request.result_summary {
+                            let steps_repo = crate::repository::SessionRequestStepsRepository::new(self.conn.clone());
+                            for request in &requests {
+                                let label = request_label(&request.prompt);
+                                let status = match &request.result_summary {
                                     Some(summary) if summary.starts_with("Success") => RequestStatus::Success,
                                     Some(_) => RequestStatus::Failure,
                                     None => RequestStatus::Failure,
                                 };
-                                let summary = last_request.result_summary.clone();
+                                let summary = request.result_summary.clone();
 
                                 let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::RequestStartedEvent {
                                     request_id: 0,
                                     label,
-                                    prompt: last_request.prompt.clone(),
+                                    prompt: request.prompt.clone(),
                                 });
+
+                                let steps = match steps_repo.load_steps_for_request(request.id) {
+                                    Ok(steps) => steps,
+                                    Err(e) => {
+                                        log::warn!(
+                                            "Failed to load steps for request {}: {}",
+                                            request.id,
+                                            e
+                                        );
+                                        Vec::new()
+                                    }
+                                };
+
+                                if steps.is_empty() {
+                                    if let Some(log) = &request._steps_log {
+                                        for line in log.lines() {
+                                            let trimmed = line.trim();
+                                            if trimmed.is_empty() {
+                                                continue;
+                                            }
+                                            let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::ProgressEvent {
+                                                step_name: "assistant_response".to_string(),
+                                                phase: StepPhase::Before,
+                                                summary: trimmed.to_string(),
+                                            });
+                                            let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::ProgressEvent {
+                                                step_name: "assistant_response".to_string(),
+                                                phase: StepPhase::After,
+                                                summary: trimmed.to_string(),
+                                            });
+                                        }
+                                    }
+                                } else {
+                                    for step in steps {
+                                        let step_name = step
+                                            .tool_name
+                                            .clone()
+                                            .unwrap_or_else(|| step.step_type.clone());
+                                        let summary = step.summary.clone();
+
+                                        let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::ProgressEvent {
+                                            step_name: step_name.clone(),
+                                            phase: StepPhase::Before,
+                                            summary: summary.clone(),
+                                        });
+                                        let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::ProgressEvent {
+                                            step_name,
+                                            phase: StepPhase::After,
+                                            summary,
+                                        });
+                                    }
+                                }
+
                                 let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::RequestFinishedEvent {
                                     request_id: 0,
                                     status,
@@ -299,6 +353,12 @@ impl EventController {
                                 let _ = worker_status_tx.send(());
                             });
                         }
+                        UiToAgentEvent::CancelRequest => {
+                            if worker_running {
+                                log::info!("Cancelling current request via Ctrl+C");
+                                self.cancel_token.cancel();
+                            }
+                        }
                         UiToAgentEvent::PermissionUpdateEvent {
                             request_id,
                             decision,
@@ -332,7 +392,8 @@ impl EventController {
                                 match apply_model_selection(&self.conn, selection) {
                                     Ok(engine) => {
                                         self.engine = Some(engine);
-                                        self.current_session_id = None;
+                                        // Keep current session when switching models so ongoing
+                                        // conversation continues with a different model.
                                     }
                                     Err(err) => {
                                         send_failure_and_continue!(self, err.to_string());
@@ -443,7 +504,7 @@ fn run_request_worker(
         use_behavior_trees,
         PermissionConfig::default(),
         prompter,
-        event_bus.agent_to_ui_tx.clone()
+        event_bus.agent_to_ui_tx.clone(),
     )
     .map_err(|e| format!("Failed to create session service: {}", e))?;
 
@@ -462,32 +523,58 @@ fn run_request_worker(
                 } else {
                     chain.fail_reason
                 };
-                let _ = event_bus.agent_to_ui_tx.send(AgentToUiEvent::RequestFinishedEvent {
-                    request_id,
-                    status: RequestStatus::Failure,
-                    summary: Some(reason),
-                    final_message: None,
-                });
+                let _ = event_bus
+                    .agent_to_ui_tx
+                    .send(AgentToUiEvent::RequestFinishedEvent {
+                        request_id,
+                        status: RequestStatus::Failure,
+                        summary: Some(reason),
+                        final_message: None,
+                    });
             } else {
-                let _ = event_bus.agent_to_ui_tx.send(AgentToUiEvent::RequestFinishedEvent {
-                    request_id,
-                    status: RequestStatus::Success,
-                    summary: Some(chain.get_summary()),
-                    final_message: chain.final_message.map(|msg| msg.to_string()),
-                });
+                let _ = event_bus
+                    .agent_to_ui_tx
+                    .send(AgentToUiEvent::RequestFinishedEvent {
+                        request_id,
+                        status: RequestStatus::Success,
+                        summary: Some(chain.get_summary()),
+                        final_message: chain.final_message.map(|msg| msg.to_string()),
+                    });
             }
             Ok(())
         }
         Err(domain::session::ServiceError::Workflow(domain::workflow::Error::Cancelled)) => {
-            let _ = event_bus.agent_to_ui_tx.send(AgentToUiEvent::RequestFinishedEvent {
-                request_id,
-                status: RequestStatus::Cancelled,
-                summary: Some("Cancelled".to_string()),
-                final_message: None,
-            });
+            let _ = event_bus
+                .agent_to_ui_tx
+                .send(AgentToUiEvent::RequestFinishedEvent {
+                    request_id,
+                    status: RequestStatus::Cancelled,
+                    summary: Some("Cancelled".to_string()),
+                    final_message: None,
+                });
             Ok(())
         }
-        Err(err) => Err(format!("Workflow error: {}", err)),
+        Err(err) => {
+            let err_str = err.to_string();
+
+            // Check if error is due to expired OAuth token
+            if err_str.contains("AuthExpired") || err_str.contains("OAuth token expired") {
+                let _ = event_bus
+                    .agent_to_ui_tx
+                    .send(AgentToUiEvent::RequestFinishedEvent {
+                        request_id,
+                        status: RequestStatus::Failure,
+                        summary: Some(
+                            "OAuth token expired. Please run /oauth-login to re-authenticate."
+                                .to_string(),
+                        ),
+                        final_message: None,
+                    });
+                return Ok(());
+            }
+
+            Err(format!("Workflow error: {}", err))
+        }
     }
 }
 
@@ -533,7 +620,7 @@ fn emit_chain_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::permissions::{PermissionDecision, PermissionRequest, PermissionScope};
+    use crate::domain::permissions::{PermissionRequest, PermissionScope, UserPermissionDecision};
     use crate::infrastructure::db;
     use crate::infrastructure::event_bus::{ModelSelection, UiToAgentEvent};
     use crate::repository::{MetaRepository, ModelsRepository, UserSettingsRepository};
@@ -646,6 +733,7 @@ mod tests {
         assert!(model.is_some());
         let model = model.unwrap();
         assert!(model._api_key.is_none());
+        assert_eq!(model.auth_type, domain::ModelAuthType::ApiKey);
 
         let settings_repo = UserSettingsRepository::new(&*conn_guard);
         let settings = settings_repo.get_current().expect("settings");
@@ -663,7 +751,7 @@ mod tests {
             vec![],
             PermissionScope::Project,
             Some(1),
-            false,  // is_read_only
+            false, // is_read_only
             PathBuf::from("/tmp"),
         );
 
@@ -681,11 +769,11 @@ mod tests {
 
         let _ = update_tx.send(PermissionUpdate {
             request_id,
-            decision: PermissionDecision::AllowOnce,
+            decision: UserPermissionDecision::AllowOnce,
         });
 
         let decision = handler.join().expect("join handler");
-        assert_eq!(decision, PermissionDecision::AllowOnce);
+        assert_eq!(decision, UserPermissionDecision::AllowOnce);
     }
 }
 
@@ -709,7 +797,7 @@ impl PermissionPrompter for BusPermissionPrompter {
     fn ask_permission(
         &self,
         request: &domain::permissions::PermissionRequest,
-    ) -> Result<PermissionDecision, crate::utils::AskError> {
+    ) -> Result<UserPermissionDecision, crate::utils::AskError> {
         let request_id = self.counter.fetch_add(1, Ordering::SeqCst);
         let scope = match request.scope {
             domain::permissions::PermissionScope::Session => "session",

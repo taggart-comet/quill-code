@@ -78,7 +78,12 @@ impl Tool for PatchFiles {
         let input = match self.load_input() {
             Ok(input) => input,
             Err(e) => {
-                return ToolResult::error(self.name().to_string(), String::new(), e.to_string(), String::new())
+                return ToolResult::error(
+                    self.name().to_string(),
+                    String::new(),
+                    e.to_string(),
+                    String::new(),
+                )
             }
         };
 
@@ -149,7 +154,7 @@ impl Tool for PatchFiles {
                 return ToolResult::error(
                     self.name().to_string(),
                     input.raw.clone(),
-                    format!("Failed to apply patch: {}", e),
+                    format!("Patch Failed: {}. Next step: read the file region you’re editing (function/block + ~10 lines around it) and generate a new patch using those exact lines as context. Then retry patch_files.", e),
                     input.call_id.clone(),
                 )
             }

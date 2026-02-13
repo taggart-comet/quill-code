@@ -1,4 +1,5 @@
 use crate::domain::session::Request;
+use crate::domain::todo::TodoList;
 use crate::domain::tools::{Error, Tool, ToolResult};
 use crate::infrastructure::db::DbPool;
 use crate::infrastructure::event_bus::AgentToUiEvent;
@@ -6,7 +7,6 @@ use crate::repository::TodoListRepository;
 use crossbeam_channel::Sender;
 use serde_json::{json, Value};
 use std::sync::Mutex;
-use crate::domain::todo::TodoList;
 
 pub struct UpdateTodoList {
     input: Mutex<Option<UpdateTodoListInput>>,
@@ -42,7 +42,10 @@ impl Tool for UpdateTodoList {
         match parsed {
             Ok(_) => {
                 let mut lock = self.input.lock().unwrap();
-                *lock = Some(UpdateTodoListInput { raw: input, call_id });
+                *lock = Some(UpdateTodoListInput {
+                    raw: input,
+                    call_id,
+                });
                 None
             }
             Err(e) => Some(Error::Parse(format!("Failed to parse input: {}", e))),
@@ -148,7 +151,7 @@ impl Tool for UpdateTodoList {
     }
 
     fn desc(&self) -> String {
-"Use this in Plan mode to create or update TODO items after exploring the codebase. For every use, provide full TODO list, as it will replace the existing list.\n\
+        "Use this in Plan mode to create or update TODO items after exploring the codebase. For every use, provide full TODO list, as it will replace the existing list.\n\
 If you're not in Plan mode, only update statuses of TODO items as you finish them.
 "
             .to_string()

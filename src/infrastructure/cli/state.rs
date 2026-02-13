@@ -1,4 +1,5 @@
 use crate::domain::tools::FileChange;
+use crate::domain::AuthMethod;
 use crate::domain::AgentModeType;
 use crate::infrastructure::cli::loading_bar::LoadingBar;
 use crate::infrastructure::event_bus::{LocalModelInfo, OpenAiModelInfo};
@@ -118,6 +119,8 @@ pub struct SettingsCache {
     pub openai_tracing_enabled: bool,
     pub web_search_enabled: bool,
     pub max_tool_calls_per_request: i32,
+    pub auth_method: AuthMethod,
+    pub oauth_token_expiry: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +207,9 @@ pub enum PopupState {
     },
     ContinueSelect {
         sessions: Vec<SessionPreview>,
+        selected: usize,
+    },
+    AuthMethodSelect {
         selected: usize,
     },
 }
@@ -297,6 +303,8 @@ impl UiState {
                 openai_tracing_enabled: false,
                 web_search_enabled: false,
                 max_tool_calls_per_request: 50,
+                auth_method: AuthMethod::ApiKey,
+                oauth_token_expiry: None,
             },
             loading_bar: LoadingBar::new(),
             openai_fetch_pending: false,

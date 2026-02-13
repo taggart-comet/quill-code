@@ -163,9 +163,12 @@ impl Tool for WebSearch {
             Ok(results) => {
                 let output = WebSearchOutput { results };
                 match serde_json::to_string(&output) {
-                    Ok(json_output) => {
-                        ToolResult::ok(self.name().to_string(), input.raw.clone(), json_output, input.call_id)
-                    }
+                    Ok(json_output) => ToolResult::ok(
+                        self.name().to_string(),
+                        input.raw.clone(),
+                        json_output,
+                        input.call_id,
+                    ),
                     Err(e) => ToolResult::error(
                         self.name().to_string(),
                         input.raw.clone(),
@@ -320,7 +323,10 @@ mod tests {
     use crate::domain::permissions::{
         checker::{PermissionChecker, PermissionPrompter},
         store::{PermissionStore, StoreError},
-        types::{PermissionConfig, PermissionDecision, PermissionRequest, PermissionScope},
+        types::{
+            PermissionConfig, PermissionRequest, PermissionScope, SystemPermissionDecision,
+            UserPermissionDecision,
+        },
     };
     use crate::domain::session::{Request, SessionRequest};
     use crate::domain::UserSettings;
@@ -357,11 +363,6 @@ mod tests {
         ) -> Result<crate::domain::permissions::types::Permission, StoreError> {
             self.created.lock().unwrap().push(permission.clone());
             Ok(permission)
-        }
-
-        fn find_session_permissions(&self, _project_id: i32) -> Result<Vec<crate::domain::permissions::types::Permission>, StoreError> {
-            // Return empty for tests - this test doesn't use session permissions
-            Ok(Vec::new())
         }
 
         fn find_permission(
@@ -407,14 +408,14 @@ mod tests {
 
     struct TestPrompter {
         calls: Arc<AtomicUsize>,
-        decision: PermissionDecision,
+        decision: UserPermissionDecision,
     }
 
     impl PermissionPrompter for TestPrompter {
         fn ask_permission(
             &self,
             _request: &PermissionRequest,
-        ) -> Result<PermissionDecision, crate::utils::AskError> {
+        ) -> Result<UserPermissionDecision, crate::utils::AskError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.decision.clone())
         }
@@ -482,6 +483,11 @@ mod tests {
             web_search_enabled,
             brave_api_key: brave_api_key.map(String::from),
             max_tool_calls_per_request: 10,
+            auth_method: "api_key".to_string(),
+            oauth_access_token: None,
+            oauth_refresh_token: None,
+            oauth_token_expiry: None,
+            oauth_account_id: None,
         };
         UserSettings::from(row)
     }
@@ -495,12 +501,12 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
-            decision: PermissionDecision::AllowOnce,
+            decision: UserPermissionDecision::AllowOnce,
         });
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig {
-                default_decision: PermissionDecision::Ask,
+                default_decision: SystemPermissionDecision::Ask,
                 ..PermissionConfig::default()
             },
             prompter,
@@ -525,12 +531,12 @@ mod tests {
 
         let store = Arc::new(TestStore::new());
         let calls = Arc::new(AtomicUsize::new(0));
-        let decision_to_return = Arc::new(Mutex::new(PermissionDecision::AllowOnce));
+        let decision_to_return = Arc::new(Mutex::new(UserPermissionDecision::AllowOnce));
         let captured_request = Arc::new(Mutex::new(None::<PermissionRequest>));
 
         struct CapturingPrompter {
             calls: Arc<AtomicUsize>,
-            decision: Arc<Mutex<PermissionDecision>>,
+            decision: Arc<Mutex<UserPermissionDecision>>,
             captured: Arc<Mutex<Option<PermissionRequest>>>,
         }
 
@@ -538,7 +544,7 @@ mod tests {
             fn ask_permission(
                 &self,
                 request: &PermissionRequest,
-            ) -> Result<PermissionDecision, crate::utils::AskError> {
+            ) -> Result<UserPermissionDecision, crate::utils::AskError> {
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 *self.captured.lock().unwrap() = Some(request.clone());
                 Ok(self.decision.lock().unwrap().clone())
@@ -554,7 +560,7 @@ mod tests {
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig {
-                default_decision: PermissionDecision::Ask,
+                default_decision: SystemPermissionDecision::Ask,
                 ..PermissionConfig::default()
             },
             prompter,
@@ -578,5 +584,4 @@ mod tests {
         assert_eq!(captured_req.tool_name, "web_search");
         assert_eq!(captured_req.paths, vec![PathBuf::from("docs.rs")]);
     }
-
 }

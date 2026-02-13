@@ -1,8 +1,8 @@
-use crate::domain::AgentModeType;
 use crate::domain::bt::BTStepNodeInterface;
-use crate::domain::session::Request;
-use crate::domain::ModelType;
 use crate::domain::prompting::user::get_user_prompt;
+use crate::domain::session::Request;
+use crate::domain::AgentModeType;
+use crate::domain::ModelType;
 
 /// LLM prompt templates for the coding assistant
 ///
@@ -29,26 +29,36 @@ pub fn get_bt_tree_step_prompt(
     }
 }
 
-pub fn get_system_prompt(model_type: ModelType, agent_mode: AgentModeType, remaining_calls: usize) -> String {
+pub fn get_system_prompt(
+    model_type: ModelType,
+    agent_mode: AgentModeType,
+    remaining_calls: usize,
+) -> String {
     let (os_name, shell_name) = get_runtime_environment();
 
     if agent_mode == AgentModeType::Plan {
         let mut system_prompt = _system_prompt_for_plan(model_type);
         if remaining_calls < 3 {
-            system_prompt.push_str(&format!("\n\nYou have {} tool calls left to process this request.", remaining_calls));
+            system_prompt.push_str(&format!(
+                "\n\nYou have {} tool calls left to process this request.",
+                remaining_calls
+            ));
         }
         return system_prompt;
     }
     if agent_mode == AgentModeType::BuildFromPlan {
         let mut system_prompt = _system_prompt_for_build_from_plan(model_type);
         if remaining_calls < 3 {
-            system_prompt.push_str(&format!("\n\nYou have {} tool calls left to process this request.", remaining_calls));
+            system_prompt.push_str(&format!(
+                "\n\nYou have {} tool calls left to process this request.",
+                remaining_calls
+            ));
         }
         return system_prompt;
     }
     let mut system_prompt = if model_type == ModelType::OpenAI {
         format!(
-            "You are Drastis, a coding agent. \n\
+            "You're Drastis, you're running as a coding agent in the CLI on a user's computer. \n\
  Use the available tools to gather context and make changes. \
  When using tools, pass JSON arguments that match their parameters. \n\
  Runtime: os={}, shell={}.",
@@ -56,12 +66,15 @@ pub fn get_system_prompt(model_type: ModelType, agent_mode: AgentModeType, remai
         )
     } else {
         format!(
-            "You are Drastis, a coding agent. Use available tools to gather context and make changes. Be concise and accurate. Runtime: os={}, shell={}.",
+            "You're Drastis, you're running as a coding agent in the CLI on a user's computer. Use available tools to gather context and make changes. Be concise and accurate. Runtime: os={}, shell={}.",
             os_name, shell_name
         )
     };
     if remaining_calls < 3 {
-        system_prompt.push_str(&format!("\n\nYou have {} tool calls left to process this request.", remaining_calls));
+        system_prompt.push_str(&format!(
+            "\n\nYou have {} tool calls left to process this request.",
+            remaining_calls
+        ));
     }
     system_prompt
 }
@@ -70,7 +83,7 @@ fn _system_prompt_for_plan(model_type: ModelType) -> String {
     let (os_name, shell_name) = get_runtime_environment();
     if model_type == ModelType::OpenAI {
         format!(
-            "You are Drastis, a coding agent. \n\
+            "You're Drastis, you're running as a coding agent in the CLI on a user's computer. \n\
 You're in the Plan Mode! Use tools to gather all required information to make a detailed plan of what user wants to achieve. \n\
 Ask the user, if there're any ambiguities, and clarify what needs to be done if the instructions are not clear. \n\
 When you gathered the information, use the `update_todo_list` tool to create the TODO list and ask the user if he would like to make any changes to the TODO list. \n\

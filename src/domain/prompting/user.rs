@@ -1,7 +1,7 @@
-use crate::domain::AgentModeType;
-use crate::domain::ModelType;
 use crate::domain::session::Request;
 use crate::domain::todo::TodoListStatus;
+use crate::domain::AgentModeType;
+use crate::domain::ModelType;
 
 /// Format request history and current request as a complete prompt
 pub fn get_user_prompt(_model_type: ModelType, request: &dyn Request) -> String {

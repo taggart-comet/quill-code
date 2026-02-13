@@ -2,9 +2,15 @@ use crate::domain::session::Request;
 use crate::domain::tools::{short_words, Error, Tool, ToolResult, TOOL_OUTPUT_BUDGET_CHARS};
 use serde::Deserialize;
 use serde_json::json;
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::Command;
+use std::process::Output;
+use std::process::Stdio;
+use std::sync::mpsc;
 use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
 
 pub struct ShellExec {
     input: Mutex<Option<ShellExecInputParsed>>,
@@ -18,6 +24,8 @@ pub struct ShellExecInput {
     pub command: String,
     #[serde(rename = "working_dir", default)]
     pub working_dir: Option<String>,
+    #[serde(rename = "timeout_ms", default)]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -25,8 +33,12 @@ struct ShellExecInputParsed {
     raw: String,
     command: String,
     working_dir: Option<String>,
+    timeout_ms: Option<u64>,
     call_id: String,
 }
+
+const DEFAULT_TIMEOUT_MS: u64 = 15 * 60 * 1000;
+const TIMEOUT_POLL_MS: u64 = 50;
 
 fn is_allowed_read_only_command(command: &str) -> bool {
     let trimmed = command.trim();
@@ -50,9 +62,11 @@ fn is_allowed_read_only_command(command: &str) -> bool {
 
     match first {
         "rg" | "grep" | "glob" | "cat" | "head" | "tail" | "less" | "more" | "wc" | "cut"
-        | "sort" | "uniq" | "find" | "ls" | "tree" | "stat" | "file" | "awk" | "pwd"
-        | "which" | "type" => true,
-        "sed" => args.iter().any(|arg| *arg == "-n" || *arg == "--quiet" || *arg == "--silent"),
+        | "sort" | "uniq" | "find" | "ls" | "tree" | "stat" | "file" | "awk" | "pwd" | "which"
+        | "type" => true,
+        "sed" => args
+            .iter()
+            .any(|arg| *arg == "-n" || *arg == "--quiet" || *arg == "--silent"),
         _ => false,
     }
 }
@@ -76,6 +90,7 @@ impl Tool for ShellExec {
                     raw: trimmed.to_string(),
                     command: parsed.command,
                     working_dir: parsed.working_dir,
+                    timeout_ms: parsed.timeout_ms,
                     call_id,
                 });
                 None
@@ -122,19 +137,22 @@ impl Tool for ShellExec {
             None => request.project_root().to_path_buf(),
         };
 
+        let timeout_ms = input.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
+        let timeout_ms = if timeout_ms == 0 {
+            DEFAULT_TIMEOUT_MS
+        } else {
+            timeout_ms
+        };
+        let timeout = Duration::from_millis(timeout_ms);
+
         // Execute the command
-        let output = match Command::new("bash")
-            .arg("-c")
-            .arg(&input.command)
-            .current_dir(&work_dir)
-            .output()
-        {
+        let output = match run_command_with_timeout(&input.command, &work_dir, timeout) {
             Ok(o) => o,
-            Err(e) => {
+            Err(err) => {
                 return ToolResult::error(
                     self.name().to_string(),
                     input.raw.clone(),
-                    format!("Failed to execute command: {}", e),
+                    err,
                     input.call_id.clone(),
                 )
             }
@@ -186,6 +204,10 @@ impl Tool for ShellExec {
                 "working_dir": {
                     "type": "string",
                     "description": "optional; directory to run command in (default: project root)"
+                },
+                "timeout_ms": {
+                    "type": "number",
+                    "description": "optional; command timeout in milliseconds (default: 900000)"
                 }
             },
             "required": ["command"],
@@ -302,6 +324,108 @@ impl ShellExec {
             input: Mutex::new(None),
         }
     }
+}
+
+fn run_command_with_timeout(
+    command: &str,
+    work_dir: &std::path::Path,
+    timeout: Duration,
+) -> Result<Output, String> {
+    let mut child = Command::new("bash")
+        .arg("-c")
+        .arg(command)
+        .current_dir(work_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to execute command: {}", e))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to capture stderr".to_string())?;
+
+    let (stdout_tx, stdout_rx) = mpsc::channel();
+    let (stderr_tx, stderr_rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let buf = read_stream_with_budget(stdout, TOOL_OUTPUT_BUDGET_CHARS);
+        let _ = stdout_tx.send(buf);
+    });
+
+    thread::spawn(move || {
+        let buf = read_stream_with_budget(stderr, TOOL_OUTPUT_BUDGET_CHARS);
+        let _ = stderr_tx.send(buf);
+    });
+
+    let start = Instant::now();
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    timed_out = true;
+                    let _ = child.kill();
+                    break child
+                        .wait()
+                        .map_err(|e| format!("Failed to stop command: {}", e))?;
+                }
+                thread::sleep(Duration::from_millis(TIMEOUT_POLL_MS));
+            }
+            Err(e) => return Err(format!("Failed while executing command: {}", e)),
+        }
+    };
+
+    let stdout_bytes = stdout_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap_or_default();
+    let stderr_bytes = stderr_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap_or_default();
+    let output = Output {
+        status,
+        stdout: stdout_bytes,
+        stderr: stderr_bytes,
+    };
+
+    if timed_out {
+        let stdout_preview = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr_preview = String::from_utf8_lossy(&output.stderr).to_string();
+        let mut message = format!("Command timed out after {}ms", timeout.as_millis());
+        if !stdout_preview.is_empty() {
+            message.push_str(&format!("\n[stdout]: {}", stdout_preview));
+        }
+        if !stderr_preview.is_empty() {
+            message.push_str(&format!("\n[stderr]: {}", stderr_preview));
+        }
+        return Err(message);
+    }
+
+    Ok(output)
+}
+
+fn read_stream_with_budget<R: Read>(mut reader: R, budget: usize) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let mut temp = [0u8; 8192];
+    loop {
+        match reader.read(&mut temp) {
+            Ok(0) => break,
+            Ok(n) => {
+                let remaining = budget.saturating_sub(buf.len());
+                if remaining > 0 {
+                    let copy_len = remaining.min(n);
+                    buf.extend_from_slice(&temp[..copy_len]);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    buf
 }
 
 impl Default for ShellExec {

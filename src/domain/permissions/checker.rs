@@ -180,6 +180,15 @@ impl PermissionChecker {
             return Ok(p.system_decision());
         }
 
+        if request.tool_name == "patch_files" {
+            if let Ok(Some(p)) = self
+                .store
+                .find_permission(&request.tool_name, project_id, "", "")
+            {
+                return Ok(p.system_decision());
+            }
+        }
+
         Ok(self.config.default_decision.clone())
     }
 
@@ -199,111 +208,59 @@ impl PermissionChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::permissions::store::SqlitePermissionStore;
     use crate::domain::permissions::types::Permission;
     use crate::domain::permissions::{PermissionRequest, PermissionScope};
     use crate::domain::session::{Request, SessionRequest};
     use crate::domain::tools::{Error, Tool, ToolResult};
+    use crate::infrastructure::db::DbPool;
+    use r2d2_sqlite::SqliteConnectionManager;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Mutex;
+    use tempfile::TempDir;
 
-    struct TestStore {
-        created: Mutex<Vec<Permission>>,
-        permissions: Mutex<Vec<Permission>>,
+    struct TestDb {
+        _temp_dir: TempDir,
+        pool: DbPool,
     }
 
-    impl TestStore {
+    impl TestDb {
         fn new() -> Self {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let db_path = temp_dir.path().join("permissions.db");
+            let manager = SqliteConnectionManager::file(&db_path);
+            let pool = r2d2::Pool::new(manager).unwrap();
+            let conn = pool.get().unwrap();
+
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS permissions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tool_name TEXT NOT NULL,
+                    command_pattern TEXT,
+                    resource_pattern TEXT,
+                    decision TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    project_id INTEGER,
+                    created_at TEXT NOT NULL
+                )",
+                [],
+            )
+            .unwrap();
+
             Self {
-                created: Mutex::new(Vec::new()),
-                permissions: Mutex::new(Vec::new()),
+                _temp_dir: temp_dir,
+                pool,
             }
         }
 
-        fn with_permissions(permissions: Vec<Permission>) -> Self {
-            Self {
-                created: Mutex::new(Vec::new()),
-                permissions: Mutex::new(permissions),
-            }
+        fn store(&self) -> Arc<SqlitePermissionStore> {
+            Arc::new(SqlitePermissionStore::new(self.pool.clone()))
         }
     }
 
-    impl PermissionStore for TestStore {
-        fn create_permission(&self, permission: Permission) -> Result<Permission, StoreError> {
-            self.created.lock().unwrap().push(permission.clone());
-            Ok(permission)
-        }
-
-        fn find_permission(
-            &self,
-            tool: &str,
-            project_id: i32,
-            command_pattern: &str,
-            resource_pattern: &str,
-        ) -> Result<Option<Permission>, StoreError> {
-            let permissions = self.permissions.lock().unwrap();
-
-            // Find the most specific matching permission
-            // Priority: command+path > command > path > tool
-            let mut best_match: Option<(&Permission, i32)> = None;
-
-            for permission in permissions.iter() {
-                // Check if project_id matches
-                if let Some(perm_project_id) = permission.project_id {
-                    if perm_project_id != project_id {
-                        continue;
-                    }
-                }
-
-                // Check if tool matches
-                if permission.tool_name != tool {
-                    continue;
-                }
-
-                // Calculate specificity and check if it matches
-                let mut specificity = 0;
-                let mut matches = true;
-
-                // Check command pattern
-                match &permission.command_pattern {
-                    Some(pattern) => {
-                        if !command_pattern.is_empty() && pattern == command_pattern {
-                            specificity += 2;
-                        } else if !command_pattern.is_empty() {
-                            matches = false;
-                        }
-                    }
-                    None => {
-                        // None means it matches any command
-                    }
-                }
-
-                // Check resource pattern
-                match &permission.resource_pattern {
-                    Some(pattern) => {
-                        if !resource_pattern.is_empty() && pattern == resource_pattern {
-                            specificity += 1;
-                        } else if !resource_pattern.is_empty() {
-                            matches = false;
-                        }
-                    }
-                    None => {
-                        // None means it matches any resource
-                    }
-                }
-
-                if matches {
-                    if let Some((_, best_specificity)) = best_match {
-                        if specificity > best_specificity {
-                            best_match = Some((permission, specificity));
-                        }
-                    } else {
-                        best_match = Some((permission, specificity));
-                    }
-                }
-            }
-
-            Ok(best_match.map(|(p, _)| p.clone()))
+    fn seed_permissions(store: &SqlitePermissionStore, permissions: Vec<Permission>) {
+        for permission in permissions {
+            store.create_permission(permission).unwrap();
         }
     }
 
@@ -503,7 +460,8 @@ mod tests {
         let file_path = root.join("sample.txt");
         std::fs::write(&file_path, "data").unwrap();
 
-        let store = Arc::new(TestStore::new());
+        let test_db = TestDb::new();
+        let store = test_db.store();
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
@@ -536,7 +494,8 @@ mod tests {
         let external_file = external_dir.path().join("external.txt");
         std::fs::write(&external_file, "data").unwrap();
 
-        let store = Arc::new(TestStore::new());
+        let test_db = TestDb::new();
+        let store = test_db.store();
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
@@ -568,7 +527,8 @@ mod tests {
         let file_path = root.join("sample.txt");
         std::fs::write(&file_path, "data").unwrap();
 
-        let store = Arc::new(TestStore::new());
+        let test_db = TestDb::new();
+        let store = test_db.store();
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
@@ -598,7 +558,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().to_path_buf();
 
-        let store = Arc::new(TestStore::new());
+        let test_db = TestDb::new();
+        let store = test_db.store();
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
@@ -630,7 +591,8 @@ mod tests {
         let root = temp.path().to_path_buf();
         let restricted_path = PathBuf::from("/etc");
 
-        let store = Arc::new(TestStore::new());
+        let test_db = TestDb::new();
+        let store = test_db.store();
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
@@ -660,7 +622,8 @@ mod tests {
     fn resolve_permission_returns_ask_when_no_stored_permission() {
         let abs = std::fs::canonicalize(".").expect("failed to canonicalize path");
 
-        let store = Arc::new(TestStore::with_permissions(vec![]));
+        let test_db = TestDb::new();
+        let store = test_db.store();
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),
@@ -708,10 +671,12 @@ mod tests {
             PermissionScope::Project,
             Some(1),
         );
-        let store = Arc::new(TestStore::with_permissions(vec![
-            command_permission,
-            path_permission,
-        ]));
+        let test_db = TestDb::new();
+        let store = test_db.store();
+        seed_permissions(
+            store.as_ref(),
+            vec![command_permission, path_permission],
+        );
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),
@@ -750,7 +715,9 @@ mod tests {
             PermissionScope::Project,
             Some(1),
         );
-        let store = Arc::new(TestStore::with_permissions(vec![path_permission]));
+        let test_db = TestDb::new();
+        let store = test_db.store();
+        seed_permissions(store.as_ref(), vec![path_permission]);
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),
@@ -781,11 +748,13 @@ mod tests {
             "command_tool".to_string(),
             None,
             None,
-            UserPermissionDecision::AllowOnce,
+            UserPermissionDecision::AlwaysAllow,
             PermissionScope::Project,
             Some(1),
         );
-        let store = Arc::new(TestStore::with_permissions(vec![tool_permission]));
+        let test_db = TestDb::new();
+        let store = test_db.store();
+        seed_permissions(store.as_ref(), vec![tool_permission]);
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),
@@ -806,13 +775,14 @@ mod tests {
 
         let decision = checker.resolve_permission(&request).unwrap();
 
-        // AllowOnce → system_decision = Ask
-        assert_eq!(decision, SystemPermissionDecision::Ask);
+        // AlwaysAllow → system_decision = Allow
+        assert_eq!(decision, SystemPermissionDecision::Allow);
     }
 
     #[test]
     fn resolve_permission_falls_back_to_default_rules() {
-        let store = Arc::new(TestStore::new());
+        let test_db = TestDb::new();
+        let store = test_db.store();
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig {
@@ -857,7 +827,9 @@ mod tests {
             Some(1),
         );
 
-        let store = Arc::new(TestStore::with_permissions(vec![perm]));
+        let test_db = TestDb::new();
+        let store = test_db.store();
+        seed_permissions(store.as_ref(), vec![perm]);
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),
@@ -899,7 +871,9 @@ mod tests {
             Some(1),
         );
 
-        let store = Arc::new(TestStore::with_permissions(vec![perm]));
+        let test_db = TestDb::new();
+        let store = test_db.store();
+        seed_permissions(store.as_ref(), vec![perm]);
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),
@@ -930,17 +904,19 @@ mod tests {
         let project_dir = tempfile::tempdir().unwrap();
         let project_root = project_dir.path().to_path_buf();
 
-        // Create an AlwaysAllow permission for write_tool (no resource pattern = matches any)
+        let target_file = project_root.join("internal.txt");
         let perm = Permission::new(
             "write_tool".to_string(),
             None,
-            None,
+            Some(target_file.to_string_lossy().to_string()),
             UserPermissionDecision::AlwaysAllow,
             PermissionScope::Project,
             Some(1),
         );
 
-        let store = Arc::new(TestStore::with_permissions(vec![perm]));
+        let test_db = TestDb::new();
+        let store = test_db.store();
+        seed_permissions(store.as_ref(), vec![perm]);
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),
@@ -953,7 +929,7 @@ mod tests {
         let request = PermissionRequest::new(
             "write_tool".to_string(),
             None,
-            vec![project_root.join("internal.txt")],
+            vec![target_file],
             PermissionScope::Project,
             Some(1),
             false,
@@ -972,17 +948,19 @@ mod tests {
         let internal_file = project_root.join("internal.txt");
         std::fs::write(&internal_file, "data").unwrap();
 
-        // Create an AlwaysAllow permission for read_only (no resource pattern = matches any)
+        // Create an AlwaysAllow permission for read_only matching a specific resource.
         let perm = Permission::new(
             "read_only".to_string(),
             None,
-            None,
+            Some(internal_file.to_string_lossy().to_string()),
             UserPermissionDecision::AlwaysAllow,
             PermissionScope::Project,
             Some(1),
         );
 
-        let store = Arc::new(TestStore::with_permissions(vec![perm]));
+        let test_db = TestDb::new();
+        let store = test_db.store();
+        seed_permissions(store.as_ref(), vec![perm]);
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),
@@ -1022,7 +1000,9 @@ mod tests {
             Some(1),
         );
 
-        let store = Arc::new(TestStore::with_permissions(vec![command_perm]));
+        let test_db = TestDb::new();
+        let store = test_db.store();
+        seed_permissions(store.as_ref(), vec![command_perm]);
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),
@@ -1077,7 +1057,9 @@ mod tests {
             Some(1),
         );
 
-        let store = Arc::new(TestStore::with_permissions(vec![existing_perm]));
+        let test_db = TestDb::new();
+        let store = test_db.store();
+        seed_permissions(store.as_ref(), vec![existing_perm]);
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),

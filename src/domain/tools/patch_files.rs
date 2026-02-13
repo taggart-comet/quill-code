@@ -200,38 +200,11 @@ impl Tool for PatchFiles {
         // Compute file changes
         let mut file_changes = Vec::new();
         for path in &touched_paths {
-            let original = original_contents.get(path);
-            let new_content = new_vfs.get(path);
+            let original = original_contents.get(path).map(|s| s.as_str());
+            let new_content = new_vfs.get(path).map(|s| s.as_str());
 
-            let (added_lines, deleted_lines) =
-                if let (Some(orig), Some(new)) = (original, new_content) {
-                    if orig != new {
-                        compute_line_diff(orig, new)
-                    } else {
-                        (0, 0) // No change
-                    }
-                } else if original.is_some() && new_content.is_none() {
-                    // Deleted: count original lines as deleted
-                    (0, original.unwrap().lines().count() as u32)
-                } else if original.is_none() && new_content.is_some() {
-                    // Added: count new lines as added
-                    (new_content.unwrap().lines().count() as u32, 0)
-                } else {
-                    (0, 0) // No content change
-                };
-
-            if added_lines > 0 || deleted_lines > 0 {
-                let unified_diff = generate_unified_diff(
-                    path,
-                    original.map(|s| s.as_str()),
-                    new_content.map(|s| s.as_str()),
-                );
-                file_changes.push(FileChange {
-                    path: path.clone(),
-                    added_lines,
-                    deleted_lines,
-                    unified_diff,
-                });
+            if let Some(change) = compute_file_change(path, original, new_content) {
+                file_changes.push(change);
             }
         }
 
@@ -345,31 +318,36 @@ impl Tool for PatchFiles {
     }
 }
 
-fn compute_line_diff(old: &str, new: &str) -> (u32, u32) {
-    let diff = TextDiff::from_lines(old, new);
-    let mut added = 0;
-    let mut deleted = 0;
-    for change in diff.iter_all_changes() {
-        match change.tag() {
-            similar::ChangeTag::Insert => added += 1,
-            similar::ChangeTag::Delete => deleted += 1,
-            similar::ChangeTag::Equal => {}
-        }
-    }
-    (added, deleted)
-}
+const DIFF_LINE_LIMIT: usize = 2000;
 
-fn generate_unified_diff(path: &str, old: Option<&str>, new: Option<&str>) -> String {
+fn compute_file_change(path: &str, old: Option<&str>, new: Option<&str>) -> Option<FileChange> {
+    let old_lines = old.map(|content| content.lines().count()).unwrap_or(0);
+    let new_lines = new.map(|content| content.lines().count()).unwrap_or(0);
+    let max_lines = old_lines.max(new_lines);
+    let large_file = max_lines > DIFF_LINE_LIMIT;
+
     match (old, new) {
         (Some(old_content), Some(new_content)) => {
-            // Modified file
+            if old_content == new_content {
+                return None;
+            }
+            if large_file {
+                return Some(FileChange {
+                    path: path.to_string(),
+                    added_lines: new_lines.saturating_sub(old_lines) as u32,
+                    deleted_lines: old_lines.saturating_sub(new_lines) as u32,
+                    unified_diff: format!("Diff omitted for large file ({} lines).", max_lines),
+                });
+            }
+
             let diff = TextDiff::from_lines(old_content, new_content);
+            let mut added = 0;
+            let mut deleted = 0;
             let mut result = String::new();
 
             result.push_str(&format!("--- a/{}\n", path));
             result.push_str(&format!("+++ b/{}\n", path));
 
-            // Generate hunks
             let mut old_line = 1;
             let mut new_line = 1;
             let mut hunk_changes = Vec::new();
@@ -391,10 +369,12 @@ fn generate_unified_diff(path: &str, old: Option<&str>, new: Option<&str>) -> St
                     similar::ChangeTag::Delete => {
                         hunk_changes.push(format!("-{}", change));
                         old_line += 1;
+                        deleted += 1;
                     }
                     similar::ChangeTag::Insert => {
                         hunk_changes.push(format!("+{}", change));
                         new_line += 1;
+                        added += 1;
                     }
                 }
             }
@@ -411,42 +391,58 @@ fn generate_unified_diff(path: &str, old: Option<&str>, new: Option<&str>) -> St
                 }
             }
 
-            result
+            Some(FileChange {
+                path: path.to_string(),
+                added_lines: added,
+                deleted_lines: deleted,
+                unified_diff: result,
+            })
         }
         (None, Some(new_content)) => {
-            // New file
-            let mut result = String::new();
-            result.push_str(&format!("--- /dev/null\n"));
-            result.push_str(&format!("+++ b/{}\n", path));
+            let added_lines = new_lines as u32;
+            let unified_diff = if large_file {
+                format!("Diff omitted for large file ({} lines).", max_lines)
+            } else {
+                let mut result = String::new();
+                result.push_str("--- /dev/null\n");
+                result.push_str(&format!("+++ b/{}\n", path));
+                result.push_str(&format!("@@ -0,0 +1,{} @@\n", new_lines));
+                for line in new_content.lines() {
+                    result.push_str(&format!("+{}\n", line));
+                }
+                result
+            };
 
-            let line_count = new_content.lines().count();
-            result.push_str(&format!("@@ -0,0 +1,{} @@\n", line_count));
-
-            for line in new_content.lines() {
-                result.push_str(&format!("+{}\n", line));
-            }
-
-            result
+            Some(FileChange {
+                path: path.to_string(),
+                added_lines,
+                deleted_lines: 0,
+                unified_diff,
+            })
         }
         (Some(old_content), None) => {
-            // Deleted file
-            let mut result = String::new();
-            result.push_str(&format!("--- a/{}\n", path));
-            result.push_str(&format!("+++ /dev/null\n"));
+            let deleted_lines = old_lines as u32;
+            let unified_diff = if large_file {
+                format!("Diff omitted for large file ({} lines).", max_lines)
+            } else {
+                let mut result = String::new();
+                result.push_str(&format!("--- a/{}\n", path));
+                result.push_str("+++ /dev/null\n");
+                result.push_str(&format!("@@ -1,{} +0,0 @@\n", old_lines));
+                for line in old_content.lines() {
+                    result.push_str(&format!("-{}\n", line));
+                }
+                result
+            };
 
-            let line_count = old_content.lines().count();
-            result.push_str(&format!("@@ -1,{} +0,0 @@\n", line_count));
-
-            for line in old_content.lines() {
-                result.push_str(&format!("-{}\n", line));
-            }
-
-            result
+            Some(FileChange {
+                path: path.to_string(),
+                added_lines: 0,
+                deleted_lines,
+                unified_diff,
+            })
         }
-        (None, None) => {
-            // No change (shouldn't happen)
-            String::new()
-        }
+        (None, None) => None,
     }
 }
 

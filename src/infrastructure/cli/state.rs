@@ -269,6 +269,7 @@ pub struct UiState {
     pub request_status: Option<RequestStatusDisplay>,
     pub request_progress: Option<String>,
     pub last_progress_update: Option<Instant>,
+    pub request_tool_calls: Option<u32>,
     pub file_changes: Option<FileChangesDisplay>,
     pub agent_mode: AgentModeType,
     pub todo_list: Option<TodoListDisplay>,
@@ -312,6 +313,7 @@ impl UiState {
             request_status: None,
             request_progress: None,
             last_progress_update: None,
+            request_tool_calls: None,
             file_changes: None,
             agent_mode: AgentModeType::Build, // Default to build mode
             todo_list: None,

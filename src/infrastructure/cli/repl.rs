@@ -160,6 +160,7 @@ fn handle_agent_event(
             state.request_status = None;
             state.request_progress = None;
             state.last_progress_update = None; // Reset timer for new request
+            state.request_tool_calls = Some(0);
             state.file_changes = None;
 
             // Display the user's message
@@ -171,10 +172,17 @@ fn handle_agent_event(
             });
         }
         AgentToUiEvent::ProgressEvent {
-            step_name: _step_name,
+            step_name,
             phase,
             summary,
         } => {
+            if matches!(phase, StepPhase::Before) && step_name != "inference" {
+                if let Some(current) = state.request_tool_calls.as_mut() {
+                    *current = current.saturating_add(1);
+                } else {
+                    state.request_tool_calls = Some(1);
+                }
+            }
             if matches!(phase, StepPhase::Before) {
                 // Check if enough time has passed since the last progress update
                 let can_update = state
@@ -222,6 +230,7 @@ fn handle_agent_event(
             }
             state.request_progress = None;
             state.last_progress_update = None; // Reset timer when request finishes
+            state.request_tool_calls = None;
 
             // Update the user message color based on request status
             for entry in state.progress.iter_mut() {
@@ -492,14 +501,7 @@ pub(crate) fn update_model_selection_in_db(
                 .iter()
                 .find(|model| model.model_name.as_deref() == Some(model_name))
             {
-                Some(model) => {
-                    if model.auth_type != auth_type {
-                        models_repo
-                            .update_auth_type(model.id, auth_type)
-                            .map_err(|e| e.to_string())?;
-                    }
-                    model.id
-                }
+                Some(model) => model.id,
                 None => {
                     models_repo
                         .create(ModelType::OpenAI, None, None, Some(model_name), auth_type)
@@ -626,7 +628,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        format!("drastis-test-{}", nanos)
+        format!("quillcode-test-{}", nanos)
     }
 
     fn cleanup_db(app_name: &str) {
@@ -785,7 +787,7 @@ mod tests {
     #[test]
     fn update_model_selection_local_persists_model() {
         with_test_db(|conn, _| {
-            let temp_path = create_temp_file("drastis-local-model");
+            let temp_path = create_temp_file("quillcode-local-model");
             let result = update_model_selection_in_db(
                 &conn,
                 &ModelSelection::LocalPath(temp_path.to_string_lossy().to_string()),

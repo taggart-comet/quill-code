@@ -2,10 +2,11 @@ use crate::domain::AgentModeType;
 use crate::infrastructure::cli::helpers::panel_block;
 use crate::infrastructure::cli::state::{FileChangesViewMode, TodoListViewMode, UiMode, UiState};
 use crate::infrastructure::cli::theme::{Theme, PANEL_PADDING};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::{layout::Rect, Frame};
+use ratatui::Frame;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &UiState, theme: Theme) {
     let (mode_name, mode_color) = match state.agent_mode {
@@ -80,6 +81,21 @@ pub fn render(frame: &mut Frame, area: Rect, state: &UiState, theme: Theme) {
     }
     let line = Line::from(line_spans);
 
-    let panel = Paragraph::new(line).block(panel_block(theme, theme.surface, PANEL_PADDING));
-    frame.render_widget(panel, area);
+    let version_text = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let version_width = version_text.len() as u16;
+
+    let block = panel_block(theme, theme.surface, PANEL_PADDING);
+    let inner_area = block.inner(area);
+    frame.render_widget(block, area);
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(version_width)])
+        .split(inner_area);
+
+    let left_panel = Paragraph::new(line);
+    frame.render_widget(left_panel, chunks[0]);
+
+    let version_panel = Paragraph::new(Line::from(Span::styled(version_text, hint_style)))
+        .alignment(Alignment::Right);
+    frame.render_widget(version_panel, chunks[1]);
 }

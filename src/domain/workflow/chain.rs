@@ -113,17 +113,6 @@ impl Chain {
         }
     }
 
-    /// Get the log of all steps
-    /// Returns text consisting of chain_step.summary for each step
-    /// This should be saved to session_request.steps_log
-    pub fn get_log(&self) -> String {
-        self.steps
-            .iter()
-            .map(|step| step.summary.clone())
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     pub fn set_system_prompt(&mut self, system_prompt: String) {
         self.system_prompt = system_prompt;
     }

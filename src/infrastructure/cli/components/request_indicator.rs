@@ -1,7 +1,7 @@
 use crate::infrastructure::cli::helpers::widgets::loading_bar_line_with_colors;
 use crate::infrastructure::cli::state::UiState;
 use crate::infrastructure::cli::theme::Theme;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
@@ -33,10 +33,28 @@ pub fn render(frame: &mut Frame, area: Rect, state: &UiState, theme: Theme) {
     let message = state.request_progress.clone().unwrap_or_default();
     let glow = glow_line(&message, ratio, theme.info_text);
     let line = merge_lines(bar_line, glow);
+    let layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(16)])
+        .split(area);
+
     let status = Paragraph::new(Text::from(line))
         .alignment(Alignment::Left)
         .style(Style::default().fg(theme.info_text));
-    frame.render_widget(status, area);
+    frame.render_widget(status, layout[0]);
+
+    let tool_calls = state
+        .request_tool_calls
+        .map(|count| format!("Tool Calls: {}", count))
+        .unwrap_or_default();
+    let tool_calls = Paragraph::new(Text::from(Line::from(Span::styled(
+        tool_calls,
+        Style::default().fg(theme.border),
+    ))))
+    .alignment(Alignment::Right);
+    let mut tool_calls_area = layout[1];
+    tool_calls_area.width = tool_calls_area.width.saturating_sub(1);
+    frame.render_widget(tool_calls, tool_calls_area);
 }
 
 fn glow_line(message: &str, ratio: f64, base: Color) -> Line<'static> {

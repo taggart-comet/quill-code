@@ -6,6 +6,7 @@ pub fn build_request_dto(
     images: &[String],
     tools: &[&dyn crate::domain::tools::Tool],
     chain: &crate::domain::workflow::Chain,
+    allow_system_messages: bool,
     mut tracer: Option<&mut openai_agents_tracing::TracingFacade>,
 ) -> RequestDTO {
     if let Some(ref mut tracer) = tracer {
@@ -21,11 +22,7 @@ pub fn build_request_dto(
         }
     }
 
-    let dto = RequestDTO::new(
-        model.to_string(),
-        tools,
-        chain,
-    );
+    let dto = RequestDTO::new(model.to_string(), tools, chain, allow_system_messages);
 
     if let Some(ref mut tracer) = tracer {
         if !images.is_empty() {
@@ -50,7 +47,7 @@ pub fn build_llm_result(
 
     let tool_call = if let Some(call) = tool_call_dto {
         // Create ToolCall for the workflow to use
-        Some(ToolCall{
+        Some(ToolCall {
             name: call.name.clone(),
             arguments: call.arguments.clone(),
             call_id: call.call_id.clone(),

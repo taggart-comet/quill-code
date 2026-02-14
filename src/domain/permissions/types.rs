@@ -72,6 +72,7 @@ pub struct PermissionRequest {
     pub scope: PermissionScope,
     pub project_id: Option<i32>,
     pub is_read_only: bool,
+    #[allow(dead_code)]
     pub project_root: PathBuf,
 }
 

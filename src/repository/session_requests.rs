@@ -10,7 +10,6 @@ pub struct SessionRequestRow {
     pub _user_settings_id: i64,
     pub prompt: String,
     pub result_summary: Option<String>,
-    pub _steps_log: Option<String>,
     pub _file_changes: Option<String>,
     pub mode: AgentModeType,
     pub _created_at: String,
@@ -25,10 +24,9 @@ impl SessionRequestRow {
             _user_settings_id: row.get(2)?,
             prompt: row.get(3)?,
             result_summary: row.get(4)?,
-            _steps_log: row.get(5)?,
-            _file_changes: row.get(6)?,
+            _file_changes: row.get(5)?,
             mode: AgentModeType::from_str(&mode_str),
-            _created_at: row.get(8)?,
+            _created_at: row.get(7)?,
         })
     }
 }
@@ -70,7 +68,6 @@ impl SessionRequestsRepository {
             _user_settings_id: user_settings_id,
             prompt: prompt.to_string(),
             result_summary: None,
-            _steps_log: None,
             _file_changes: None,
             mode,
             _created_at: created_at,
@@ -86,21 +83,6 @@ impl SessionRequestsRepository {
         conn.execute(
             "UPDATE session_requests SET result_summary = ? WHERE id = ?",
             params![result_summary, request_id],
-        )
-        .map_err(|e| e.to_string())?;
-
-        Ok(())
-    }
-
-    /// Update the steps log for a request
-    pub fn update_steps_log(&self, request_id: i64, steps_log: &str) -> Result<(), String> {
-        let conn = self
-            .conn
-            .get()
-            .map_err(|e| format!("Failed to get connection: {}", e))?;
-        conn.execute(
-            "UPDATE session_requests SET steps_log = ? WHERE id = ?",
-            params![steps_log, request_id],
         )
         .map_err(|e| e.to_string())?;
 
@@ -129,7 +111,7 @@ impl SessionRequestsRepository {
             .get()
             .map_err(|e| format!("Failed to get connection: {}", e))?;
         let mut stmt = conn
-            .prepare("SELECT id, session_id, user_settings_id, prompt, result_summary, steps_log, file_changes, mode, created_at FROM session_requests WHERE session_id = ? ORDER BY created_at ASC")
+            .prepare("SELECT id, session_id, user_settings_id, prompt, result_summary, file_changes, mode, created_at FROM session_requests WHERE session_id = ? ORDER BY created_at ASC")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt

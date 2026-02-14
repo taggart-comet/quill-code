@@ -8,7 +8,7 @@ use ratatui::{layout::Rect, Frame};
 
 pub fn render(frame: &mut Frame, area: Rect, state: &UiState, theme: Theme) {
     let title = state.header_title.clone().unwrap_or_else(|| {
-        "Drastis, your not so capable coding companion is ready to make some slop!".to_string()
+        "QuillCode, your not so capable coding companion is ready to make some slop!".to_string()
     });
     let header = Paragraph::new(title)
         .alignment(Alignment::Left)

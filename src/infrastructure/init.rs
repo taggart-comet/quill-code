@@ -62,7 +62,7 @@ impl Default for InfrastructureConfig {
     fn default() -> Self {
         Self {
             _debug: false,
-            app_name: "drastis".to_string(),
+            app_name: "quillcode".to_string(),
         }
     }
 }
@@ -117,7 +117,7 @@ impl InfrastructureInitializer {
             let conn = connection
                 .get()
                 .map_err(|e| InitError::Database(format!("Failed to get connection: {}", e)))?;
-            let engine = self.load_existing_model(&*conn, model_id)?;
+            let engine = self.load_existing_model(&*conn, model_id, &connection)?;
             let settings_repo = UserSettingsRepository::new(&*conn);
             let _ = settings_repo.update_current_model_id(Some(model_id));
             Some(engine)
@@ -139,6 +139,7 @@ impl InfrastructureInitializer {
         &self,
         conn: &Connection,
         model_id: i64,
+        pool: &DbPool,
     ) -> Result<Arc<dyn InferenceEngine>, InitError> {
         let models_repo = ModelsRepository::new(conn);
         let model = models_repo
@@ -216,7 +217,8 @@ impl InfrastructureInitializer {
                     }
                 };
 
-                OpenAIEngine::new(auth_token, model_name).map_err(|e| InitError::ModelLoadError(e))
+                OpenAIEngine::new(auth_token, model_name, pool.clone())
+                    .map_err(|e| InitError::ModelLoadError(e))
             }
         }
     }
@@ -235,9 +237,9 @@ mod tests {
     #[test]
     fn test_infrastructure_config() {
         let config = InfrastructureConfig::default();
-        assert_eq!(config.app_name, "drastis");
+        assert_eq!(config.app_name, "quillcode");
         let initializer = InfrastructureInitializer::default();
-        assert_eq!(initializer.config.app_name, "drastis");
+        assert_eq!(initializer.config.app_name, "quillcode");
     }
 }
 
@@ -454,11 +456,6 @@ pub fn apply_model_selection(
             for model in &existing_models {
                 if model.model_name.as_deref() == Some(&model_name) {
                     model_id = Some(model.id);
-                    if model.auth_type != auth_type {
-                        models_repo
-                            .update_auth_type(model.id, auth_type)
-                            .map_err(InitError::Repository)?;
-                    }
                     break;
                 }
             }
@@ -471,11 +468,6 @@ pub fn apply_model_selection(
                     models_repo
                         .update_model_name(existing.id, Some(&model_name))
                         .map_err(InitError::Repository)?;
-                    if existing.auth_type != auth_type {
-                        models_repo
-                            .update_auth_type(existing.id, auth_type)
-                            .map_err(InitError::Repository)?;
-                    }
                     model_id = Some(existing.id);
                 }
             }
@@ -490,8 +482,8 @@ pub fn apply_model_selection(
                 }
             };
 
-            let engine =
-                OpenAIEngine::new(auth_token, &model_name).map_err(InitError::ModelLoadError)?;
+            let engine = OpenAIEngine::new(auth_token, &model_name, conn.clone())
+                .map_err(InitError::ModelLoadError)?;
 
             meta_repo
                 .set_last_used_model_id(model_id)

@@ -8,7 +8,7 @@ use infrastructure::{EventBus, EventController, InfrastructureInitializer};
 use std::fs::OpenOptions;
 
 #[derive(Parser)]
-#[command(name = "drastis")]
+#[command(name = "quillcode")]
 #[command(about = "Local LLM inference CLI", long_about = None)]
 struct Args {
     #[arg(short, long)]
@@ -34,10 +34,10 @@ fn run(debug: bool) -> Result<(), String> {
         }
         builder.filter_module("rustyline", log::LevelFilter::Info);
 
-        if let Some(project_dirs) = directories::ProjectDirs::from("com", "drastis", "drastis") {
+        if let Some(project_dirs) = directories::ProjectDirs::from("com", "quillcode", "quillcode") {
             let log_dir = project_dirs.data_dir();
             if std::fs::create_dir_all(log_dir).is_ok() {
-                let log_path = log_dir.join("drastis.log");
+                let log_path = log_dir.join("quillcode.log");
                 if let Ok(file) = OpenOptions::new().create(true).append(true).open(log_path) {
                     builder.target(env_logger::Target::Pipe(Box::new(file)));
                 }

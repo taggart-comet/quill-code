@@ -1,17 +1,22 @@
 use super::session::Session;
 use crate::domain::permissions::store::SqlitePermissionStore;
+use crate::domain::permissions::UserPermissionDecision;
 use crate::domain::permissions::{PermissionChecker, PermissionConfig, PermissionPrompter};
+use crate::domain::todo::{TodoList, TodoListStatus};
+use crate::domain::tools::FileChange;
 use crate::domain::workflow::{CancellationToken, Chain, Error as WorkflowError, Workflow};
 use crate::domain::UserSettings;
 use crate::infrastructure::db::DbPool;
-use crate::infrastructure::AgentToUiEvent;
+use crate::infrastructure::event_bus::{AgentToUiEvent, PermissionUpdate, StepPhase};
 use crate::infrastructure::InferenceEngine;
 use crate::repository::{
     ModelsRepository, SessionRequestStepsRepository, SessionRequestsRepository, TodoListRepository,
     UserSettingsRepository,
 };
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Receiver, Sender};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Service for running workflows on sessions
 pub struct SessionService {
@@ -19,6 +24,7 @@ pub struct SessionService {
     use_behavior_trees: bool,
     conn: DbPool,
     event_sender: Sender<AgentToUiEvent>,
+    confirmation_rx: Option<Receiver<PermissionUpdate>>,
 }
 
 impl SessionService {
@@ -29,6 +35,7 @@ impl SessionService {
         permission_config: PermissionConfig,
         prompter: Arc<dyn PermissionPrompter>,
         event_sender: Sender<AgentToUiEvent>,
+        confirmation_rx: Option<Receiver<PermissionUpdate>>,
     ) -> Result<Self, String> {
         let permission_store = Arc::new(SqlitePermissionStore::new(conn.clone()));
         let permission_checker = Arc::new(PermissionChecker::new_with_prompter(
@@ -50,19 +57,17 @@ impl SessionService {
             use_behavior_trees,
             conn,
             event_sender,
+            confirmation_rx,
         })
     }
 
-    /// Run the workflow for a new request in the given session
-    /// This is the main entry point for executing a coding task
-    /// Creates a new session_request, runs the workflow, and updates the request with the result
-    /// Returns the execution chain
+    /// Main entry point — thin router that dispatches to build() or build_from_plan()
     pub fn run(
         &mut self,
         session: &Session,
         prompt: &str,
         images: &[String],
-        mode: crate::domain::AgentModeType, // NEW: Agent mode
+        mode: crate::domain::AgentModeType,
         cancel: &CancellationToken,
     ) -> Result<Chain, ServiceError> {
         // Get user settings and model name
@@ -81,7 +86,7 @@ impl SessionService {
                 .flatten()
                 .and_then(|model| model.model_name);
             (settings_row, model_name)
-        }; // conn lock is dropped here
+        };
 
         let user_settings =
             UserSettings::from(settings_row.clone()).with_current_model_name(model_name);
@@ -95,14 +100,10 @@ impl SessionService {
                 })?;
                 let repo = TodoListRepository::new(&*conn);
                 match repo.get_by_session(session.id()) {
-                    Ok(Some(row)) => {
-                        match serde_json::from_str::<crate::domain::todo::TodoList>(&row.content) {
-                            Ok(todo_list) => {
-                                !todo_list.is_completed() && !todo_list.items.is_empty()
-                            }
-                            Err(_) => false,
-                        }
-                    }
+                    Ok(Some(row)) => match serde_json::from_str::<TodoList>(&row.content) {
+                        Ok(todo_list) => !todo_list.is_completed() && !todo_list.items.is_empty(),
+                        Err(_) => false,
+                    },
                     _ => false,
                 }
             };
@@ -115,22 +116,46 @@ impl SessionService {
             mode
         };
 
+        // Route based on effective mode
+        if effective_mode == crate::domain::AgentModeType::BuildFromPlan {
+            self.build_from_plan(session, images, &user_settings, &settings_row, cancel)
+        } else {
+            self.build(
+                session,
+                prompt,
+                images,
+                &user_settings,
+                settings_row.id,
+                effective_mode,
+                cancel,
+            )
+        }
+    }
+
+    /// Run a single workflow for one prompt. Creates its own SessionRequest in DB.
+    fn build(
+        &mut self,
+        session: &Session,
+        prompt: &str,
+        images: &[String],
+        user_settings: &UserSettings,
+        settings_id: i64,
+        mode: crate::domain::AgentModeType,
+        cancel: &CancellationToken,
+    ) -> Result<Chain, ServiceError> {
         // Create a new session request
         let requests_repo = SessionRequestsRepository::new(self.conn.clone());
         let request_row = requests_repo
-            .create(session.id(), settings_row.id, prompt, effective_mode)
+            .create(session.id(), settings_id, prompt, mode)
             .map_err(|e| ServiceError::Repository(e))?;
         let request_id = request_row.id;
 
-        // Update session with current request for workflow execution
-        // We need a mutable session, but we only have a reference
-        // The workflow uses session.current_prompt() which needs the current_request set
-        // For now, we'll create a temporary session with the current request set
+        // Set up request context
         let mut request = session.clone();
         request.set_current_request(prompt.to_string());
         request.set_current_images(images.to_vec());
         request.set_current_user_settings(Some(user_settings.clone()));
-        request.set_current_mode(effective_mode);
+        request.set_current_mode(mode);
         request.set_conn(self.conn.clone());
 
         // Run the workflow
@@ -138,23 +163,18 @@ impl SessionService {
             self.workflow.run_using_bt(&mut request, cancel)
         } else {
             self.workflow
-                .run(&mut request, cancel, effective_mode)
-                .map_err(ServiceError::Workflow)?;
-            Ok(self.workflow.get_chain().clone())
+                .run(&mut request, cancel, mode)
+                .map(|_| self.workflow.get_chain().clone())
         };
 
-        let result = match result {
+        match result {
             Ok(chain) => {
-                // Get summary and log from chain
+                // Get summary from chain
                 let summary = chain.get_summary();
-                let steps_log = chain.get_log();
 
-                // Update the request with result_summary and steps_log
+                // Update the request with result_summary
                 requests_repo
                     .update_result(request_id, &summary)
-                    .map_err(|e| ServiceError::Repository(e))?;
-                requests_repo
-                    .update_steps_log(request_id, &steps_log)
                     .map_err(|e| ServiceError::Repository(e))?;
 
                 // Aggregate file changes from patch_files steps
@@ -167,9 +187,29 @@ impl SessionService {
                     .cloned()
                     .collect();
 
-                if !file_changes.is_empty() {
+                let mut merged_changes: Vec<FileChange> = Vec::new();
+                let mut index_by_path: HashMap<String, usize> = HashMap::new();
+
+                for change in file_changes {
+                    if let Some(&idx) = index_by_path.get(&change.path) {
+                        let existing = &mut merged_changes[idx];
+                        existing.added_lines += change.added_lines;
+                        existing.deleted_lines += change.deleted_lines;
+                        if !change.unified_diff.is_empty() {
+                            if !existing.unified_diff.is_empty() {
+                                existing.unified_diff.push('\n');
+                            }
+                            existing.unified_diff.push_str(&change.unified_diff);
+                        }
+                    } else {
+                        index_by_path.insert(change.path.clone(), merged_changes.len());
+                        merged_changes.push(change);
+                    }
+                }
+
+                if !merged_changes.is_empty() {
                     let changes_json = serde_json::json!({
-                        "changes": file_changes.clone()
+                        "changes": merged_changes.clone()
                     })
                     .to_string();
                     requests_repo
@@ -179,7 +219,7 @@ impl SessionService {
                     // Emit FileChangesEvent
                     let _ = self.event_sender.send(AgentToUiEvent::FileChangesEvent {
                         request_id,
-                        changes: file_changes,
+                        changes: merged_changes,
                     });
                 }
 
@@ -195,25 +235,259 @@ impl SessionService {
                 Ok(chain)
             }
             Err(e) => {
-                // Create a chain with error
-                let mut chain = Chain::new();
+                // Use the actual workflow chain (which has steps executed before failure)
+                let mut chain = self.workflow.get_chain().clone();
                 chain.mark_failed(format!("Error: {}", e));
 
                 let summary = chain.get_summary();
-                let steps_log = chain.get_log();
 
                 requests_repo
                     .update_result(request_id, &summary)
                     .map_err(|e| ServiceError::Repository(e))?;
-                requests_repo
-                    .update_steps_log(request_id, &steps_log)
-                    .map_err(|e| ServiceError::Repository(e))?;
+
+                // Save chain steps to database even on failure
+                let steps_repo = SessionRequestStepsRepository::new(self.conn.clone());
+                if let Err(save_err) =
+                    steps_repo.save_steps_for_request(request_id, chain.get_steps())
+                {
+                    log::error!(
+                        "Failed to save steps for failed request {}: {}",
+                        request_id,
+                        save_err
+                    );
+                }
 
                 Err(ServiceError::Workflow(e))
             }
+        }
+    }
+
+    /// Sub-agent orchestrator: runs each pending TODO item as its own build() call
+    fn build_from_plan(
+        &mut self,
+        session: &Session,
+        images: &[String],
+        user_settings: &UserSettings,
+        settings_row: &crate::repository::UserSettingsRow,
+        cancel: &CancellationToken,
+    ) -> Result<Chain, ServiceError> {
+        let todo_list = match self.load_todo_list(session.id()) {
+            Some(list) if !list.items.is_empty() && !list.is_completed() => list,
+            _ => {
+                // No pending items — nothing to do
+                let mut chain = Chain::new();
+                chain.set_final_message("No pending TODO items to execute.".to_string());
+                return Ok(chain);
+            }
         };
 
-        result
+        let pending_items: Vec<(usize, String, String)> = todo_list
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.status != TodoListStatus::Completed)
+            .map(|(i, item)| (i, item.title.clone(), item.description.clone()))
+            .collect();
+
+        let mut last_chain: Option<Chain> = None;
+
+        for (item_index, title, description) in &pending_items {
+            // Check cancellation before each item
+            if cancel.is_cancelled() {
+                return Err(ServiceError::Workflow(WorkflowError::Cancelled));
+            }
+
+            // Emit progress: starting item
+            let _ = self.event_sender.send(AgentToUiEvent::ProgressEvent {
+                step_name: "build_from_plan".to_string(),
+                phase: StepPhase::Before,
+                summary: format!("Starting: {}", title),
+            });
+
+            // Build sub-prompt from title + description
+            let sub_prompt = format!(
+                "## Task: {}\n\n{}\n\nComplete this task using available tools. When done, provide a summary of what was accomplished.",
+                title, description
+            );
+
+            // Run as Build mode sub-agent
+            let chain_result = self.build(
+                session,
+                &sub_prompt,
+                images,
+                user_settings,
+                settings_row.id,
+                crate::domain::AgentModeType::Build,
+                cancel,
+            );
+
+            match chain_result {
+                Ok(chain) => {
+                    // Mark TODO item as completed in DB
+                    if let Err(e) = self.mark_todo_item_completed(session.id(), *item_index) {
+                        log::error!(
+                            "Failed to mark TODO item {} as completed: {}",
+                            item_index,
+                            e
+                        );
+                    }
+
+                    // Emit TodoListUpdateEvent so UI updates in real-time
+                    if let Some(updated_list) = self.load_todo_list(session.id()) {
+                        let _ = self.event_sender.send(AgentToUiEvent::TodoListUpdateEvent {
+                            items: updated_list.items,
+                        });
+                    }
+
+                    // Emit progress: completed item
+                    let _ = self.event_sender.send(AgentToUiEvent::ProgressEvent {
+                        step_name: "build_from_plan".to_string(),
+                        phase: StepPhase::After,
+                        summary: format!("Completed: {}", title),
+                    });
+
+                    last_chain = Some(chain);
+
+                    // Ask user for confirmation before proceeding to next item
+                    // (skip for the last pending item)
+                    if let Some(ref confirmation_rx) = self.confirmation_rx {
+                        let pending_remaining: Vec<_> = pending_items
+                            .iter()
+                            .skip(
+                                pending_items
+                                    .iter()
+                                    .position(|(i, _, _)| *i == *item_index)
+                                    .unwrap_or(0)
+                                    + 1,
+                            )
+                            .collect();
+                        if !pending_remaining.is_empty() {
+                            let next_title = &pending_remaining[0].1;
+                            let total = pending_items.len();
+                            let completed_count = total - pending_remaining.len();
+
+                            // Use a counter starting above BusPermissionPrompter's range
+                            let confirmation_request_id = 1_000_000 + completed_count as u64;
+
+                            let _ =
+                                self.event_sender
+                                    .send(AgentToUiEvent::PermissionRequestEvent {
+                                        request_id: confirmation_request_id,
+                                        tool_name: "build_from_plan".to_string(),
+                                        command: Some(format!("Continue to next: {}", next_title)),
+                                        paths: vec![format!(
+                                            "Completed {}/{}: {}",
+                                            completed_count, total, title
+                                        )],
+                                        scope: "session".to_string(),
+                                        is_read_only: false,
+                                    });
+
+                            // Block on confirmation, checking cancellation periodically
+                            loop {
+                                if cancel.is_cancelled() {
+                                    return Err(ServiceError::Workflow(WorkflowError::Cancelled));
+                                }
+
+                                match confirmation_rx.recv_timeout(Duration::from_millis(200)) {
+                                    Ok(update) if update.request_id == confirmation_request_id => {
+                                        match update.decision {
+                                            UserPermissionDecision::AllowOnce
+                                            | UserPermissionDecision::AlwaysAllow => {
+                                                break; // Continue to next item
+                                            }
+                                            UserPermissionDecision::Deny => {
+                                                // Graceful stop
+                                                let mut chain =
+                                                    last_chain.unwrap_or_else(Chain::new);
+                                                chain.set_final_message(
+                                                    "Stopped by user after completing: "
+                                                        .to_string()
+                                                        + title,
+                                                );
+                                                return Ok(chain);
+                                            }
+                                        }
+                                    }
+                                    Ok(_) => continue, // Wrong request_id, keep waiting
+                                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                                        return Err(ServiceError::Workflow(
+                                            WorkflowError::Cancelled,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Emit progress: failed item
+                    let _ = self.event_sender.send(AgentToUiEvent::ProgressEvent {
+                        step_name: "build_from_plan".to_string(),
+                        phase: StepPhase::After,
+                        summary: format!("Failed: {}", title),
+                    });
+
+                    // Stop on first failure
+                    return Err(e);
+                }
+            }
+        }
+
+        // Return last chain or an empty success chain
+        Ok(last_chain.unwrap_or_else(|| {
+            let mut chain = Chain::new();
+            chain.set_final_message("All TODO items completed.".to_string());
+            chain
+        }))
+    }
+
+    /// Load the TODO list for a session from the database
+    fn load_todo_list(&self, session_id: i64) -> Option<TodoList> {
+        let conn = self.conn.get().ok()?;
+        let repo = TodoListRepository::new(&*conn);
+        let row = repo.get_by_session(session_id).ok()??;
+        serde_json::from_str::<TodoList>(&row.content).ok()
+    }
+
+    /// Mark a specific TODO item as completed and save back to DB
+    fn mark_todo_item_completed(&self, session_id: i64, item_index: usize) -> Result<(), String> {
+        let conn = self
+            .conn
+            .get()
+            .map_err(|e| format!("Failed to get database connection: {}", e))?;
+        let repo = TodoListRepository::new(&*conn);
+
+        let row = repo
+            .get_by_session(session_id)
+            .map_err(|e| format!("Failed to get TODO list: {}", e))?
+            .ok_or_else(|| "No TODO list found for session".to_string())?;
+
+        let mut todo_list: TodoList = serde_json::from_str(&row.content)
+            .map_err(|e| format!("Failed to parse TODO list: {}", e))?;
+
+        if item_index < todo_list.items.len() {
+            todo_list.items[item_index].status = TodoListStatus::Completed;
+        } else {
+            return Err(format!(
+                "Item index {} out of bounds (list has {} items)",
+                item_index,
+                todo_list.items.len()
+            ));
+        }
+
+        let updated_json = serde_json::to_string(&todo_list)
+            .map_err(|e| format!("Failed to serialize TODO list: {}", e))?;
+
+        let todo_list_row = repo
+            .get_or_create_for_session(session_id)
+            .map_err(|e| format!("Failed to get TODO list row: {}", e))?;
+
+        repo.update_content(todo_list_row.id, &updated_json)
+            .map_err(|e| format!("Failed to update TODO list: {}", e))?;
+
+        Ok(())
     }
 }
 
@@ -223,4 +497,528 @@ pub enum ServiceError {
     Workflow(WorkflowError),
     #[error("repository error: {0}")]
     Repository(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::permissions::{PermissionRequest, UserPermissionDecision};
+    use crate::domain::todo::{TodoItem, TodoList, TodoListStatus};
+    use crate::domain::workflow::chain::Chain;
+    use crate::domain::{AgentModeType, ModelType, Project};
+    use crate::infrastructure::db;
+    use crate::infrastructure::event_bus::{AgentToUiEvent, PermissionUpdate};
+    use crate::infrastructure::inference::{InferenceEngine, LLMInferenceResult};
+    use crate::infrastructure::InfaError;
+    use crate::repository::{
+        ProjectsRepository, SessionsRepository, TodoListRepository, UserSettingsRepository,
+    };
+    use crossbeam_channel::{unbounded, Receiver, Sender};
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_app_name() -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        format!("quillcode-test-session-{}", nanos)
+    }
+
+    /// Mock inference engine that returns a simple text response (no tool_call)
+    struct MockInferenceEngine;
+
+    impl InferenceEngine for MockInferenceEngine {
+        fn generate(
+            &self,
+            _tools: &[&dyn crate::domain::tools::Tool],
+            _chain: &Chain,
+            _images: &[String],
+            _tracer: Option<&mut openai_agents_tracing::TracingFacade>,
+        ) -> Result<LLMInferenceResult, InfaError> {
+            Ok(LLMInferenceResult {
+                summary: "Task completed successfully.".to_string(),
+                raw_output: "Done.".to_string(),
+                tool_call: None,
+            })
+        }
+
+        fn get_type(&self) -> ModelType {
+            ModelType::OpenAI
+        }
+    }
+
+    /// Mock permission prompter that always returns AllowOnce
+    struct MockPermissionPrompter;
+
+    impl PermissionPrompter for MockPermissionPrompter {
+        fn ask_permission(
+            &self,
+            _request: &PermissionRequest,
+        ) -> Result<UserPermissionDecision, crate::utils::AskError> {
+            Ok(UserPermissionDecision::AllowOnce)
+        }
+    }
+
+    /// Create a test session in the database and return the Session entity
+    fn create_test_session(conn: &crate::infrastructure::db::DbPool) -> Session {
+        let conn_guard = conn.get().expect("get connection");
+
+        // Ensure settings exist
+        let settings_repo = UserSettingsRepository::new(&*conn_guard);
+        let _ = settings_repo.get_current().expect("init settings");
+
+        let projects_repo = ProjectsRepository::new(&*conn_guard);
+        let project_row = projects_repo
+            .create("test-project", "/tmp/test-project")
+            .expect("create project");
+
+        let sessions_repo = SessionsRepository::new(&*conn_guard);
+        let session_row = sessions_repo
+            .create(project_row.id, "test-session")
+            .expect("create session");
+
+        let project = Project::from(project_row);
+        Session::from_row_with_project(session_row, project)
+    }
+
+    /// Populate a TODO list in the database for the given session
+    fn create_todo_list(
+        conn: &crate::infrastructure::db::DbPool,
+        session_id: i64,
+        items: Vec<TodoItem>,
+    ) {
+        let conn_guard = conn.get().expect("get connection");
+        let repo = TodoListRepository::new(&*conn_guard);
+        let row = repo
+            .get_or_create_for_session(session_id)
+            .expect("create todo list");
+        let todo_list = TodoList { items };
+        let json = serde_json::to_string(&todo_list).expect("serialize todo list");
+        repo.update_content(row.id, &json)
+            .expect("update todo list");
+    }
+
+    fn create_session_service(
+        conn: &crate::infrastructure::db::DbPool,
+        event_sender: Sender<AgentToUiEvent>,
+        confirmation_rx: Option<Receiver<PermissionUpdate>>,
+    ) -> SessionService {
+        let engine: Arc<dyn InferenceEngine> = Arc::new(MockInferenceEngine);
+        let prompter: Arc<dyn PermissionPrompter> = Arc::new(MockPermissionPrompter);
+
+        SessionService::new(
+            engine,
+            conn.clone(),
+            false, // use_behavior_trees
+            PermissionConfig::default(),
+            prompter,
+            event_sender,
+            confirmation_rx,
+        )
+        .expect("create session service")
+    }
+
+    fn pending_item(title: &str, desc: &str) -> TodoItem {
+        TodoItem {
+            title: title.to_string(),
+            description: desc.to_string(),
+            status: TodoListStatus::Pending,
+        }
+    }
+
+    fn completed_item(title: &str, desc: &str) -> TodoItem {
+        TodoItem {
+            title: title.to_string(),
+            description: desc.to_string(),
+            status: TodoListStatus::Completed,
+        }
+    }
+
+    /// Load the current TODO list from DB for assertions
+    fn load_todo_list(conn: &crate::infrastructure::db::DbPool, session_id: i64) -> TodoList {
+        let conn_guard = conn.get().expect("get connection");
+        let repo = TodoListRepository::new(&*conn_guard);
+        let row = repo
+            .get_by_session(session_id)
+            .expect("get todo list")
+            .expect("todo list exists");
+        serde_json::from_str(&row.content).expect("parse todo list")
+    }
+
+    // ─── Test Cases ───
+
+    #[test]
+    fn run_routes_build_mode() {
+        let app_name = unique_app_name();
+        let conn = db::init_db(&app_name).expect("init db");
+        let (event_tx, _event_rx) = unbounded();
+
+        let mut service = create_session_service(&conn, event_tx, None);
+        let session = create_test_session(&conn);
+        let cancel = CancellationToken::new();
+
+        let result = service.run(
+            &session,
+            "Hello, build something",
+            &[],
+            AgentModeType::Build,
+            &cancel,
+        );
+
+        let chain = result.expect("build should succeed");
+        assert!(!chain.is_failed);
+    }
+
+    #[test]
+    fn run_build_from_plan_falls_back_when_no_todo() {
+        let app_name = unique_app_name();
+        let conn = db::init_db(&app_name).expect("init db");
+        let (event_tx, _event_rx) = unbounded();
+
+        let mut service = create_session_service(&conn, event_tx, None);
+        let session = create_test_session(&conn);
+        let cancel = CancellationToken::new();
+
+        // No TODO list in DB → should fall back to Build mode
+        let result = service.run(
+            &session,
+            "Build from plan",
+            &[],
+            AgentModeType::BuildFromPlan,
+            &cancel,
+        );
+
+        let chain = result.expect("fallback build should succeed");
+        assert!(!chain.is_failed);
+    }
+
+    #[test]
+    fn run_build_from_plan_falls_back_when_all_completed() {
+        let app_name = unique_app_name();
+        let conn = db::init_db(&app_name).expect("init db");
+        let (event_tx, _event_rx) = unbounded();
+
+        let mut service = create_session_service(&conn, event_tx, None);
+        let session = create_test_session(&conn);
+        let cancel = CancellationToken::new();
+
+        // All items completed
+        create_todo_list(
+            &conn,
+            session.id(),
+            vec![
+                completed_item("Task 1", "Done already"),
+                completed_item("Task 2", "Also done"),
+            ],
+        );
+
+        let result = service.run(
+            &session,
+            "Build from plan",
+            &[],
+            AgentModeType::BuildFromPlan,
+            &cancel,
+        );
+
+        let chain = result.expect("fallback build should succeed");
+        assert!(!chain.is_failed);
+    }
+
+    #[test]
+    fn build_from_plan_executes_pending_items() {
+        let app_name = unique_app_name();
+        let conn = db::init_db(&app_name).expect("init db");
+        let (event_tx, _event_rx) = unbounded();
+        let (confirm_tx, confirm_rx) = unbounded::<PermissionUpdate>();
+
+        let mut service = create_session_service(&conn, event_tx, Some(confirm_rx));
+        let session = create_test_session(&conn);
+        let cancel = CancellationToken::new();
+
+        create_todo_list(
+            &conn,
+            session.id(),
+            vec![
+                pending_item("Task 1", "First task"),
+                pending_item("Task 2", "Second task"),
+            ],
+        );
+
+        // Auto-approve confirmations between items
+        std::thread::spawn(move || {
+            // After item 1 completes, a confirmation with request_id 1_000_001 is sent
+            let _ = confirm_tx.send(PermissionUpdate {
+                request_id: 1_000_001,
+                decision: UserPermissionDecision::AllowOnce,
+            });
+        });
+
+        let result = service.run(
+            &session,
+            "Build from plan",
+            &[],
+            AgentModeType::BuildFromPlan,
+            &cancel,
+        );
+
+        let chain = result.expect("build_from_plan should succeed");
+        assert!(!chain.is_failed);
+
+        // Both items should be completed
+        let todo = load_todo_list(&conn, session.id());
+        assert_eq!(todo.items.len(), 2);
+        assert_eq!(todo.items[0].status, TodoListStatus::Completed);
+        assert_eq!(todo.items[1].status, TodoListStatus::Completed);
+    }
+
+    #[test]
+    fn build_from_plan_stops_on_deny() {
+        let app_name = unique_app_name();
+        let conn = db::init_db(&app_name).expect("init db");
+        let (event_tx, _event_rx) = unbounded();
+        let (confirm_tx, confirm_rx) = unbounded::<PermissionUpdate>();
+
+        let mut service = create_session_service(&conn, event_tx, Some(confirm_rx));
+        let session = create_test_session(&conn);
+        let cancel = CancellationToken::new();
+
+        create_todo_list(
+            &conn,
+            session.id(),
+            vec![
+                pending_item("Task 1", "First task"),
+                pending_item("Task 2", "Second task"),
+                pending_item("Task 3", "Third task"),
+            ],
+        );
+
+        // Deny the first confirmation
+        std::thread::spawn(move || {
+            let _ = confirm_tx.send(PermissionUpdate {
+                request_id: 1_000_001,
+                decision: UserPermissionDecision::Deny,
+            });
+        });
+
+        let result = service.run(
+            &session,
+            "Build from plan",
+            &[],
+            AgentModeType::BuildFromPlan,
+            &cancel,
+        );
+
+        let chain = result.expect("deny should return Ok with stop message");
+        assert!(
+            chain
+                .final_message
+                .as_ref()
+                .map(|m| m.contains("Stopped by user"))
+                .unwrap_or(false),
+            "Expected 'Stopped by user' in final_message, got {:?}",
+            chain.final_message
+        );
+
+        // Only first item should be completed
+        let todo = load_todo_list(&conn, session.id());
+        assert_eq!(todo.items[0].status, TodoListStatus::Completed);
+        assert_eq!(todo.items[1].status, TodoListStatus::Pending);
+        assert_eq!(todo.items[2].status, TodoListStatus::Pending);
+    }
+
+    #[test]
+    fn build_from_plan_skips_completed_items() {
+        let app_name = unique_app_name();
+        let conn = db::init_db(&app_name).expect("init db");
+        let (event_tx, _event_rx) = unbounded();
+        let (confirm_tx, confirm_rx) = unbounded::<PermissionUpdate>();
+
+        let mut service = create_session_service(&conn, event_tx, Some(confirm_rx));
+        let session = create_test_session(&conn);
+        let cancel = CancellationToken::new();
+
+        create_todo_list(
+            &conn,
+            session.id(),
+            vec![
+                completed_item("Task 1", "Already done"),
+                pending_item("Task 2", "Second task"),
+                pending_item("Task 3", "Third task"),
+            ],
+        );
+
+        // Auto-approve between the 2 pending items
+        std::thread::spawn(move || {
+            let _ = confirm_tx.send(PermissionUpdate {
+                request_id: 1_000_001,
+                decision: UserPermissionDecision::AllowOnce,
+            });
+        });
+
+        let result = service.run(
+            &session,
+            "Build from plan",
+            &[],
+            AgentModeType::BuildFromPlan,
+            &cancel,
+        );
+
+        let chain = result.expect("should succeed");
+        assert!(!chain.is_failed);
+
+        // All items should now be completed (first was already, other two were executed)
+        let todo = load_todo_list(&conn, session.id());
+        assert_eq!(todo.items[0].status, TodoListStatus::Completed);
+        assert_eq!(todo.items[1].status, TodoListStatus::Completed);
+        assert_eq!(todo.items[2].status, TodoListStatus::Completed);
+    }
+
+    #[test]
+    fn build_from_plan_sends_confirmation_events() {
+        let app_name = unique_app_name();
+        let conn = db::init_db(&app_name).expect("init db");
+        let (event_tx, event_rx) = unbounded();
+        let (confirm_tx, confirm_rx) = unbounded::<PermissionUpdate>();
+
+        let mut service = create_session_service(&conn, event_tx, Some(confirm_rx));
+        let session = create_test_session(&conn);
+        let cancel = CancellationToken::new();
+
+        create_todo_list(
+            &conn,
+            session.id(),
+            vec![
+                pending_item("Task 1", "First task"),
+                pending_item("Task 2", "Second task"),
+            ],
+        );
+
+        // Auto-approve
+        std::thread::spawn(move || {
+            let _ = confirm_tx.send(PermissionUpdate {
+                request_id: 1_000_001,
+                decision: UserPermissionDecision::AllowOnce,
+            });
+        });
+
+        let _ = service.run(
+            &session,
+            "Build from plan",
+            &[],
+            AgentModeType::BuildFromPlan,
+            &cancel,
+        );
+
+        // Collect all events
+        drop(service);
+        let mut events = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            events.push(event);
+        }
+
+        // Find PermissionRequestEvent with tool_name "build_from_plan"
+        let confirmation_events: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, AgentToUiEvent::PermissionRequestEvent { tool_name, .. } if tool_name == "build_from_plan"))
+            .collect();
+
+        assert!(
+            !confirmation_events.is_empty(),
+            "Expected at least one PermissionRequestEvent with tool_name 'build_from_plan'"
+        );
+    }
+
+    #[test]
+    fn build_from_plan_respects_cancellation() {
+        let app_name = unique_app_name();
+        let conn = db::init_db(&app_name).expect("init db");
+        let (event_tx, _event_rx) = unbounded();
+
+        let mut service = create_session_service(&conn, event_tx, None);
+        let session = create_test_session(&conn);
+        let cancel = CancellationToken::new();
+
+        create_todo_list(
+            &conn,
+            session.id(),
+            vec![pending_item("Task 1", "First task")],
+        );
+
+        // Cancel before running
+        cancel.cancel();
+
+        let result = service.run(
+            &session,
+            "Build from plan",
+            &[],
+            AgentModeType::BuildFromPlan,
+            &cancel,
+        );
+
+        assert!(
+            matches!(
+                result,
+                Err(ServiceError::Workflow(WorkflowError::Cancelled))
+            ),
+            "Expected Cancelled error, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn build_from_plan_emits_todo_update_events() {
+        let app_name = unique_app_name();
+        let conn = db::init_db(&app_name).expect("init db");
+        let (event_tx, event_rx) = unbounded();
+        let (confirm_tx, confirm_rx) = unbounded::<PermissionUpdate>();
+
+        let mut service = create_session_service(&conn, event_tx, Some(confirm_rx));
+        let session = create_test_session(&conn);
+        let cancel = CancellationToken::new();
+
+        create_todo_list(
+            &conn,
+            session.id(),
+            vec![
+                pending_item("Task 1", "First task"),
+                pending_item("Task 2", "Second task"),
+            ],
+        );
+
+        // Auto-approve
+        std::thread::spawn(move || {
+            let _ = confirm_tx.send(PermissionUpdate {
+                request_id: 1_000_001,
+                decision: UserPermissionDecision::AllowOnce,
+            });
+        });
+
+        let _ = service.run(
+            &session,
+            "Build from plan",
+            &[],
+            AgentModeType::BuildFromPlan,
+            &cancel,
+        );
+
+        // Collect all events
+        drop(service);
+        let mut events = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            events.push(event);
+        }
+
+        // Find TodoListUpdateEvent emissions
+        let todo_update_events: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, AgentToUiEvent::TodoListUpdateEvent { .. }))
+            .collect();
+
+        assert!(
+            todo_update_events.len() >= 2,
+            "Expected at least 2 TodoListUpdateEvent, got {}",
+            todo_update_events.len()
+        );
+    }
 }

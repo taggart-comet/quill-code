@@ -1,14 +1,15 @@
-use crate::domain::tools::Tool;
-use crate::domain::{Chain, ModelType};
 use crate::domain::prompting::format_todo_list_message;
+use crate::domain::tools::Tool;
+use crate::domain::workflow::step::StepType;
+use crate::domain::{Chain, ModelType};
 use serde::Serialize;
 use serde_json::Value;
-use crate::domain::workflow::step::StepType;
 
 #[derive(Debug, Serialize)]
 pub struct RequestDTO {
     model: String,
-    instructions: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instructions: Option<String>,
     input: Vec<InputMessageDto>,
     tools: Vec<ToolDto>,
     tool_choice: String,
@@ -87,7 +88,6 @@ impl InputContent {
             image_url: data_url,
         }
     }
-
 }
 
 impl FunctionOutputDto {
@@ -129,13 +129,14 @@ impl RequestDTO {
         model: String,
         tools: &[&dyn Tool],
         chain: &Chain,
+        allow_system_messages: bool,
     ) -> Self {
         // User request is now part of the chain, no need to add separately
-        let input = MessageDto::build(chain);
+        let input = MessageDto::build(chain, allow_system_messages);
 
         Self {
             model,
-            instructions: chain.system_prompt.clone(),
+            instructions: Some(chain.system_prompt.clone()),
             input,
             tools: tools.iter().map(|tool| ToolDto::from_tool(*tool)).collect(),
             tool_choice: "auto".to_string(),
@@ -159,47 +160,22 @@ impl ToolDto {
 }
 
 impl MessageDto {
-    fn build(chain: &Chain) -> Vec<InputMessageDto> {
+    fn build(chain: &Chain, allow_system_messages: bool) -> Vec<InputMessageDto> {
         let steps = chain.get_steps_with_history();
 
         let mut result: Vec<InputMessageDto> = Vec::new();
 
-        for step in steps.iter() {
-            let is_user_message = step.step_type == StepType::UserMessage.as_str();
-
-                if is_user_message {
-                    // User message: text + optional images
-                    let mut items = vec![InputContent::text(step.input_payload.clone())];
-
-                    if let Some(ref images) = step.images {
-                        for image_url in images {
-                            items.push(InputContent::image(image_url.clone()));
-                        }
-                    }
-
-                    result.push(InputMessageDto::Message(Self {
-                        content: items,
-                        role: Some(ROLE_USER.to_string()),
-                        kind: "message".to_string(),
-                    }));
-                } else if step.step_type == StepType::ToolCall.as_str() {
-
-                    let tool_name = step.tool_name.clone().unwrap();
-                    let call_id = step.call_id.clone().unwrap();
-                    // Tool call output is a separate DTO type
-                result.push(InputMessageDto::FunctionCall(FunctionCallDto::new(tool_name, step.input_payload.clone(), call_id.clone())));
-                result.push(InputMessageDto::FunctionOutput(FunctionOutputDto::new(step.get_output(ModelType::OpenAI), call_id)));
-                } else {
-                    // Assistant message
-                    result.push(InputMessageDto::Message(Self {
-                        content: vec![InputContent::output_text(step.get_output(ModelType::OpenAI))],
-                        role: Some(ROLE_ASSISTANT.to_string()),
-                        kind: "message".to_string(),
-                    }));
-                }
+        if !allow_system_messages && !chain.system_prompt.trim().is_empty() {
+            result.push(InputMessageDto::Message(Self {
+                content: vec![InputContent::text(format!(
+                    "System instructions:\n{}",
+                    chain.system_prompt.trim()
+                ))],
+                role: Some(ROLE_USER.to_string()),
+                kind: "message".to_string(),
+            }));
         }
 
-        // Add the plan as system message at the beginning if it exists and is not completed
         if let Some(ref todo_list) = chain.todo_list {
             if !todo_list.is_completed() {
                 let todo_content = serde_json::to_string_pretty(&todo_list.items)
@@ -209,12 +185,58 @@ impl MessageDto {
 
                 let todo_input = Self {
                     content: vec![InputContent::text(todo_message)],
-                    role: Some(ROLE_SYSTEM.to_string()),
+                    role: Some(if allow_system_messages {
+                        ROLE_SYSTEM.to_string()
+                    } else {
+                        ROLE_USER.to_string()
+                    }),
                     kind: "message".to_string(),
                 };
 
-                // Put it first
-                result.insert(0, InputMessageDto::Message(todo_input));
+                result.push(InputMessageDto::Message(todo_input));
+            }
+        }
+
+        for step in steps.iter() {
+            let is_user_message = step.step_type == StepType::UserMessage.as_str();
+
+            if is_user_message {
+                // User message: text + optional images
+                let mut items = vec![InputContent::text(step.input_payload.clone())];
+
+                if let Some(ref images) = step.images {
+                    for image_url in images {
+                        items.push(InputContent::image(image_url.clone()));
+                    }
+                }
+
+                result.push(InputMessageDto::Message(Self {
+                    content: items,
+                    role: Some(ROLE_USER.to_string()),
+                    kind: "message".to_string(),
+                }));
+            } else if step.step_type == StepType::ToolCall.as_str() {
+                let tool_name = step.tool_name.clone().unwrap();
+                let call_id = step.call_id.clone().unwrap();
+                // Tool call output is a separate DTO type
+                result.push(InputMessageDto::FunctionCall(FunctionCallDto::new(
+                    tool_name,
+                    step.input_payload.clone(),
+                    call_id.clone(),
+                )));
+                result.push(InputMessageDto::FunctionOutput(FunctionOutputDto::new(
+                    step.get_output(ModelType::OpenAI),
+                    call_id,
+                )));
+            } else {
+                // Assistant message
+                result.push(InputMessageDto::Message(Self {
+                    content: vec![InputContent::output_text(
+                        step.get_output(ModelType::OpenAI),
+                    )],
+                    role: Some(ROLE_ASSISTANT.to_string()),
+                    kind: "message".to_string(),
+                }));
             }
         }
 

@@ -46,10 +46,50 @@ fn is_allowed_read_only_command(command: &str) -> bool {
         return false;
     }
 
+    let mut parts: Vec<&str> = Vec::new();
+    let mut start = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut prev_escape = false;
+
+    for (idx, ch) in trimmed.char_indices() {
+        if prev_escape {
+            prev_escape = false;
+            continue;
+        }
+
+        match ch {
+            '\\' => {
+                prev_escape = true;
+            }
+            '\'' if !in_double => {
+                in_single = !in_single;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+            }
+            '|' if !in_single && !in_double => {
+                parts.push(trimmed[start..idx].trim());
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+
+    if !parts.is_empty() {
+        parts.push(trimmed[start..].trim());
+        if parts.len() != 2 {
+            return false;
+        }
+
+        return parts
+            .iter()
+            .all(|part| is_allowed_read_only_command(part));
+    }
+
     if trimmed.contains(';')
         || trimmed.contains("&&")
         || trimmed.contains("||")
-        || trimmed.contains('|')
         || trimmed.contains('>')
         || trimmed.contains('<')
     {
@@ -63,7 +103,7 @@ fn is_allowed_read_only_command(command: &str) -> bool {
     match first {
         "rg" | "grep" | "glob" | "cat" | "head" | "tail" | "less" | "more" | "wc" | "cut"
         | "sort" | "uniq" | "find" | "ls" | "tree" | "stat" | "file" | "awk" | "pwd" | "which"
-        | "type" => true,
+        | "type" | "nl" => true,
         "sed" => args
             .iter()
             .any(|arg| *arg == "-n" || *arg == "--quiet" || *arg == "--silent"),
@@ -723,6 +763,35 @@ mod tests {
         assert!(tool
             .parse_input(
                 r#"{"command":"sed -n '1,10p' file.txt"}"#.to_string(),
+                "call-id".to_string()
+            )
+            .is_none());
+        assert!(tool.is_read_only());
+
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(
+                r#"{"command":"rg -n foo src | wc -l"}"#.to_string(),
+                "call-id".to_string()
+            )
+            .is_none());
+        assert!(tool.is_read_only());
+
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(
+                r#"{"command":"nl -ba src/domain/session/service.rs | sed -n '130,220p'"}"#
+                    .to_string(),
+                "call-id".to_string()
+            )
+            .is_none());
+        assert!(tool.is_read_only());
+
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(
+                r#"{"command":"rg -n \"insert_char|delete_prev_char|next_char_boundary|prev_char_boundary\" src/infrastructure/cli/helpers.rs src/infrastructure/cli/controls.rs"}"#
+                    .to_string(),
                 "call-id".to_string()
             )
             .is_none());

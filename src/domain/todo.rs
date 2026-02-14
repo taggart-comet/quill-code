@@ -41,7 +41,7 @@ pub struct TodoItem {
     pub status: TodoListStatus,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TodoList {
     pub items: Vec<TodoItem>,
 }

@@ -67,7 +67,7 @@ pub fn initiate_oauth_flow() -> Result<OAuthTokens, String> {
     auth_url.query_pairs_mut()
         .append_pair("id_token_add_organizations", "true")
         .append_pair("codex_cli_simplified_flow", "true")
-        .append_pair("originator", "drastis");
+        .append_pair("originator", "quillcode");
 
     // Start local HTTP server for callback
     let server = Server::http("127.0.0.1:1455")

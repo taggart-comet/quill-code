@@ -14,6 +14,7 @@ use crate::infrastructure::event_bus::{AgentToUiEvent, StepPhase};
 use crate::infrastructure::inference::InferenceEngine;
 use crossbeam_channel::Sender;
 use openai_agents_tracing::{SpanKind, TracingFacade};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::runtime::{Builder, Handle};
@@ -167,6 +168,15 @@ impl Workflow {
         user_prompt_override: Option<String>,
         mode: AgentModeType,
     ) -> Result<(), Error> {
+        // Inject AGENTS.md as first user message if chain is empty and file exists
+        if self.chain.steps.is_empty() {
+            if let Some(agents_content) = load_agents_prompt(request.project_root()) {
+                self.chain
+                    .steps
+                    .push(ChainStep::user_message(agents_content, vec![]));
+            }
+        }
+
         let base_user_prompt = prompting::get_user_prompt(self.engine.get_type(), request);
         let user_prompt = user_prompt_override
             .as_deref()
@@ -405,5 +415,49 @@ impl Workflow {
         // If one is None and the other isn't, change occurred
         // If both exist but titles differ, change occurred
         prev_active != curr_active
+    }
+}
+
+fn load_agents_prompt(project_root: &Path) -> Option<String> {
+    let agents_path = project_root.join("AGENTS.md");
+    if agents_path.is_file() {
+        std::fs::read_to_string(&agents_path)
+            .ok()
+            .filter(|content| !content.is_empty())
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_load_agents_prompt_file_exists() {
+        let dir = tempdir().unwrap();
+        let agents_path = dir.path().join("AGENTS.md");
+        std::fs::write(&agents_path, "You are a helpful agent.").unwrap();
+
+        let result = load_agents_prompt(dir.path());
+        assert_eq!(result, Some("You are a helpful agent.".to_string()));
+    }
+
+    #[test]
+    fn test_load_agents_prompt_no_file() {
+        let dir = tempdir().unwrap();
+        let result = load_agents_prompt(dir.path());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_load_agents_prompt_empty_file() {
+        let dir = tempdir().unwrap();
+        let agents_path = dir.path().join("AGENTS.md");
+        std::fs::write(&agents_path, "").unwrap();
+
+        let result = load_agents_prompt(dir.path());
+        assert_eq!(result, None);
     }
 }

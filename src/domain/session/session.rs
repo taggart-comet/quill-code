@@ -128,7 +128,6 @@ impl Request for Session {
     }
 
     fn get_history_steps(&self) -> Vec<crate::domain::workflow::step::ChainStep> {
-        use crate::domain::workflow::step::ChainStep;
         use crate::repository::SessionRequestStepsRepository;
 
         // BuildFromPlan keeps context minimal — TODO list (with statuses) is
@@ -161,28 +160,7 @@ impl Request for Session {
             }
         };
 
-        if !steps.is_empty() {
-            return steps;
-        }
-
-        // Fallback: rebuild assistant responses from stored steps_log when steps table is empty
-        let mut fallback_steps = Vec::new();
-        for request in &self.requests {
-            if let Some(log) = request.steps_log() {
-                for line in log.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    fallback_steps.push(ChainStep::assistant_response(
-                        trimmed.to_string(),
-                        trimmed.to_string(),
-                    ));
-                }
-            }
-        }
-
-        fallback_steps
+        steps
     }
 
     fn get_session_plan(&self) -> Option<crate::domain::todo::TodoList> {

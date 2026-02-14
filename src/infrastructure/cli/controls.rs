@@ -923,6 +923,19 @@ pub fn handle_paste_event(state: &mut UiState, pasted_text: String) -> Result<()
     log::info!("========== PASTE EVENT RECEIVED ==========");
     log::info!("Pasted text length: {} chars", pasted_text.len());
 
+    if matches!(
+        state.mode,
+        UiMode::Popup(PopupState::BraveApiKeyPrompt { .. })
+            | UiMode::Popup(PopupState::OpenAiApiKeyPrompt { .. })
+    ) {
+        if let Some(input) = state.popup_input.as_mut() {
+            for ch in pasted_text.chars() {
+                insert_char(&mut input.text, &mut input.cursor, ch);
+            }
+        }
+        return Ok(());
+    }
+
     if pasted_text.is_empty() {
         log::info!("⚠️ EMPTY paste text - likely an image paste from screenshot");
     } else {

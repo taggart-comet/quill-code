@@ -2,6 +2,7 @@ use super::dto::ResponseDTO;
 use super::translator::{build_llm_result, build_request_dto};
 use crate::infrastructure::inference::LLMInferenceResult;
 use std::error::Error;
+use std::io::Read;
 
 #[derive(Clone)]
 pub enum AuthToken {
@@ -17,6 +18,7 @@ pub enum OpenAIClientError {
     Api {
         status: reqwest::StatusCode,
         body: String,
+        request_body: String,
     },
     Deserialize {
         source: serde_json::Error,
@@ -26,7 +28,7 @@ pub enum OpenAIClientError {
         body: String,
     },
     BodyRead {
-        source: reqwest::Error,
+        source: String,
         status: reqwest::StatusCode,
         content_encoding: Option<String>,
         content_type: Option<String>,
@@ -41,8 +43,16 @@ pub enum OpenAIClientError {
 impl std::fmt::Display for OpenAIClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            OpenAIClientError::Api { status, body } => {
-                write!(f, "OpenAI API error (status={}, body={})", status, body)
+            OpenAIClientError::Api {
+                status,
+                body,
+                request_body,
+            } => {
+                write!(
+                    f,
+                    "OpenAI API error (status={}, body={}, request_body={})",
+                    status, body, request_body
+                )
             }
             OpenAIClientError::Deserialize { source, body } => {
                 write!(
@@ -66,7 +76,7 @@ impl std::fmt::Display for OpenAIClientError {
             } => {
                 write!(
                     f,
-                    "Failed to read SSE response body (status={}, content-encoding={}, content-type={}, content-length={}, transfer-encoding={}, headers={}, partial-body={}, error={:?})",
+                    "Failed to read SSE response body (status={}, content-encoding={}, content-type={}, content-length={}, transfer-encoding={}, headers={}, partial-body={}, error={})",
                     status,
                     content_encoding.as_deref().unwrap_or("<missing>"),
                     content_type.as_deref().unwrap_or("<missing>"),
@@ -90,32 +100,27 @@ impl std::error::Error for OpenAIClientError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             OpenAIClientError::Deserialize { source, .. } => Some(source),
-            OpenAIClientError::BodyRead { source, .. } => Some(source),
             _ => None,
         }
     }
 }
 
 pub struct OpenAIClient {
-    auth_token: AuthToken,
     model: String,
     client: reqwest::blocking::Client,
 }
 
 impl OpenAIClient {
-    pub fn new(auth_token: AuthToken, model: String) -> Self {
+    pub fn new(model: String) -> Self {
         let client = reqwest::blocking::Client::builder()
             .build()
             .expect("Failed to build OpenAI HTTP client");
-        Self {
-            auth_token,
-            model,
-            client,
-        }
+        Self { model, client }
     }
 
     pub fn call_responses_api(
         &self,
+        auth_token: &AuthToken,
         tools: &[&dyn crate::domain::tools::Tool],
         chain: &crate::domain::workflow::Chain,
         images: &[String],
@@ -123,7 +128,13 @@ impl OpenAIClient {
     ) -> Result<LLMInferenceResult, Box<dyn Error + Send + Sync>> {
         let max_attempts = 3;
         for attempt in 1..=max_attempts {
-            match self.call_responses_api_inner(tools, chain, images, tracer.as_deref_mut()) {
+            match self.call_responses_api_inner(
+                auth_token,
+                tools,
+                chain,
+                images,
+                tracer.as_deref_mut(),
+            ) {
                 Ok(result) => return Ok(result),
                 Err(e) => {
                     let error_str = e.to_string();
@@ -164,19 +175,27 @@ impl OpenAIClient {
 
     fn call_responses_api_inner(
         &self,
+        auth_token: &AuthToken,
         tools: &[&dyn crate::domain::tools::Tool],
         chain: &crate::domain::workflow::Chain,
         images: &[String],
         mut tracer: Option<&mut openai_agents_tracing::TracingFacade>,
     ) -> Result<LLMInferenceResult, Box<dyn Error + Send + Sync>> {
         // Determine API URL based on auth type
-        let url = match &self.auth_token {
+        let url = match auth_token {
             AuthToken::OAuth { .. } => "https://chatgpt.com/backend-api/codex/responses",
             AuthToken::ApiKey(_) => "https://api.openai.com/v1/responses",
         };
 
-        let request_body =
-            build_request_dto(&self.model, images, tools, chain, tracer.as_deref_mut());
+        let allow_system_messages = !matches!(auth_token, AuthToken::OAuth { .. });
+        let request_body = build_request_dto(
+            &self.model,
+            images,
+            tools,
+            chain,
+            allow_system_messages,
+            tracer.as_deref_mut(),
+        );
 
         // Start span with model name and add request as JSON
         if let Some(tracer) = &mut tracer {
@@ -192,7 +211,7 @@ impl OpenAIClient {
         let mut request_builder = self.client.post(url).json(&request_body);
 
         // Add authentication header
-        match &self.auth_token {
+        match auth_token {
             AuthToken::ApiKey(key) => {
                 request_builder =
                     request_builder.header("Authorization", format!("Bearer {}", key));
@@ -243,30 +262,43 @@ impl OpenAIClient {
                 return Err(Box::new(OpenAIClientError::AuthExpired));
             }
 
-            return Err(Box::new(OpenAIClientError::Api { status, body }));
+            let request_body_str = serde_json::to_string(&request_body)
+                .unwrap_or_else(|e| format!("(failed to serialize request: {})", e));
+            return Err(Box::new(OpenAIClientError::Api {
+                status,
+                body,
+                request_body: Self::format_body_excerpt(&request_body_str, 12000),
+            }));
         }
 
         // Read SSE stream as raw bytes to avoid encoding issues with chunked transfer
         let mut body_bytes = Vec::new();
-        if let Err(e) = response.copy_to(&mut body_bytes) {
-            let partial_body = if body_bytes.is_empty() {
-                None
-            } else {
-                Some(Self::format_body_excerpt(
-                    &String::from_utf8_lossy(&body_bytes),
-                    4000,
-                ))
-            };
-            return Err(Box::new(OpenAIClientError::BodyRead {
-                source: e,
-                status,
-                content_encoding: content_encoding.clone(),
-                content_type: content_type.clone(),
-                content_length,
-                transfer_encoding: transfer_encoding.clone(),
-                response_headers: response_headers.clone(),
-                partial_body,
-            }));
+        let mut buffer = [0u8; 8192];
+        loop {
+            match response.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read_len) => body_bytes.extend_from_slice(&buffer[..read_len]),
+                Err(e) => {
+                    let partial_body = if body_bytes.is_empty() {
+                        None
+                    } else {
+                        Some(Self::format_body_excerpt(
+                            &String::from_utf8_lossy(&body_bytes),
+                            4000,
+                        ))
+                    };
+                    return Err(Box::new(OpenAIClientError::BodyRead {
+                        source: e.to_string(),
+                        status,
+                        content_encoding: content_encoding.clone(),
+                        content_type: content_type.clone(),
+                        content_length,
+                        transfer_encoding: transfer_encoding.clone(),
+                        response_headers: response_headers.clone(),
+                        partial_body,
+                    }));
+                }
+            }
         }
         let body = String::from_utf8_lossy(&body_bytes).into_owned();
         log::debug!("SSE response length: {} bytes", body.len());

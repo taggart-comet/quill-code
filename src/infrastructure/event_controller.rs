@@ -216,44 +216,23 @@ impl EventController {
                                     }
                                 };
 
-                                if steps.is_empty() {
-                                    if let Some(log) = &request._steps_log {
-                                        for line in log.lines() {
-                                            let trimmed = line.trim();
-                                            if trimmed.is_empty() {
-                                                continue;
-                                            }
-                                            let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::ProgressEvent {
-                                                step_name: "assistant_response".to_string(),
-                                                phase: StepPhase::Before,
-                                                summary: trimmed.to_string(),
-                                            });
-                                            let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::ProgressEvent {
-                                                step_name: "assistant_response".to_string(),
-                                                phase: StepPhase::After,
-                                                summary: trimmed.to_string(),
-                                            });
-                                        }
-                                    }
-                                } else {
-                                    for step in steps {
-                                        let step_name = step
-                                            .tool_name
-                                            .clone()
-                                            .unwrap_or_else(|| step.step_type.clone());
-                                        let summary = step.summary.clone();
+                                for step in steps {
+                                    let step_name = step
+                                        .tool_name
+                                        .clone()
+                                        .unwrap_or_else(|| step.step_type.clone());
+                                    let summary = step.summary.clone();
 
-                                        let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::ProgressEvent {
-                                            step_name: step_name.clone(),
-                                            phase: StepPhase::Before,
-                                            summary: summary.clone(),
-                                        });
-                                        let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::ProgressEvent {
-                                            step_name,
-                                            phase: StepPhase::After,
-                                            summary,
-                                        });
-                                    }
+                                    let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::ProgressEvent {
+                                        step_name: step_name.clone(),
+                                        phase: StepPhase::Before,
+                                        summary: summary.clone(),
+                                    });
+                                    let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::ProgressEvent {
+                                        step_name,
+                                        phase: StepPhase::After,
+                                        summary,
+                                    });
                                 }
 
                                 let _ = self.bus.agent_to_ui_tx.send(AgentToUiEvent::RequestFinishedEvent {
@@ -493,6 +472,8 @@ fn run_request_worker(
     let worker_conn = infrastructure::db::init_db(app_name)
         .map_err(|e| format!("Failed to open worker database: {}", e))?;
 
+    let confirmation_rx = permission_response_rx.clone();
+
     let prompter = Arc::new(BusPermissionPrompter::new(
         event_bus.agent_to_ui_tx.clone(),
         permission_response_rx,
@@ -505,6 +486,7 @@ fn run_request_worker(
         PermissionConfig::default(),
         prompter,
         event_bus.agent_to_ui_tx.clone(),
+        Some(confirmation_rx),
     )
     .map_err(|e| format!("Failed to create session service: {}", e))?;
 
@@ -573,9 +555,53 @@ fn run_request_worker(
                 return Ok(());
             }
 
-            Err(format!("Workflow error: {}", err))
+            // Extract a clean user-facing message instead of nesting all error layers
+            let user_message = extract_user_facing_error(&err);
+            Err(user_message)
         }
     }
+}
+
+/// Extract a clean, user-facing error message from a ServiceError.
+/// The full error details (with request/response bodies) are saved in DB via result_summary.
+fn extract_user_facing_error(err: &domain::session::ServiceError) -> String {
+    let full = err.to_string();
+
+    // For inference errors containing "OpenAI API error", extract status and a short body excerpt
+    if let Some(start) = full.find("OpenAI API error (status=") {
+        let rest = &full[start..];
+        // Extract status code
+        let status = rest
+            .strip_prefix("OpenAI API error (status=")
+            .and_then(|s| s.split(',').next())
+            .unwrap_or("unknown");
+
+        // Extract response body excerpt (between "body=" and ", request_body=")
+        let body_excerpt = rest
+            .find("body=")
+            .map(|i| {
+                let body_start = i + 5;
+                let body_end = rest[body_start..]
+                    .find(", request_body=")
+                    .map(|j| body_start + j)
+                    .unwrap_or_else(|| rest.len().min(body_start + 200));
+                let excerpt = &rest[body_start..body_end];
+                if excerpt.len() > 200 {
+                    format!("{}...", &excerpt[..200])
+                } else {
+                    excerpt.to_string()
+                }
+            })
+            .unwrap_or_default();
+
+        return format!("API error ({}): {}", status, body_excerpt);
+    }
+
+    // For other errors, strip the nested "workflow error: " prefix chain
+    let cleaned = full
+        .strip_prefix("workflow error: ")
+        .unwrap_or(&full);
+    cleaned.to_string()
 }
 
 fn request_label(prompt: &str) -> String {
@@ -635,7 +661,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        format!("drastis-test-{}", nanos)
+        format!("quillcode-test-{}", nanos)
     }
 
     #[test]

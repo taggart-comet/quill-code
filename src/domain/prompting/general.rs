@@ -62,6 +62,8 @@ pub fn get_system_prompt(
 You communicate concisely and pragmatically, keeping momentum toward the user's goal and avoiding unnecessary back-and-forth.\n\
 In Default mode, strongly prefer executing the user's request rather than stopping to ask questions.\n\
 Use the available tools to gather context and make changes.\n\
+Important: a normal text response ends the request and performs no actions. If the task requires edits or commands, you must call tools in this turn.\n\
+Do not describe actions; take them now with tools or ask a blocking question.\n\
 When using tools, pass JSON arguments that match their parameters.\n\
 Runtime: os={}, shell={}.",
             os_name, shell_name
@@ -100,6 +102,8 @@ The description MUST be a self-contained prompt that another agent can execute i
 - Code patterns and conventions to follow from the existing codebase \n\
 - Acceptance criteria (what the result should look like) \n\
 Write 1-3 detailed paragraphs with all necessary context so the sub-agent needs no additional information. \n\
+Important: a normal text response ends the request and performs no actions. If the task requires tools, you must call tools in this turn.\n\
+Do not describe actions; take them now with tools or ask a blocking question.\n\
 When using tools, pass JSON arguments that match their parameters. \n\
 Runtime: os={}, shell={}.",
             os_name, shell_name
@@ -129,6 +133,8 @@ You will receive one TODO item at a time via the user prompt. \n\
 Before starting, mark the item as `in_progress` if it's still `pending`. Accomplish what is described in the current item using available tools, then mark it as `completed` via `update_todo_list` (preserve other items' statuses). \n\
 After marking an item complete, continue working on the next pending item without stopping. \n\
 When all items are done, stop without calling any more tools - just tell the user that you're done, and if you encountered any detours from the original plan. \n\
+Important: a normal text response ends the request and performs no actions. If the task requires tools, you must call tools in this turn.\n\
+Do not describe actions; take them now with tools or ask a blocking question.\n\
 When using tools, pass JSON arguments that match their parameters. \n\
 Runtime: os={}, shell={}.",
             os_name, shell_name

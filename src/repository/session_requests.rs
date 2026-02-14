@@ -7,7 +7,6 @@ use rusqlite::{params, Row};
 pub struct SessionRequestRow {
     pub id: i64,
     pub _session_id: i64,
-    pub _user_settings_id: i64,
     pub prompt: String,
     pub result_summary: Option<String>,
     pub _file_changes: Option<String>,
@@ -17,16 +16,15 @@ pub struct SessionRequestRow {
 
 impl SessionRequestRow {
     fn from_row(row: &Row) -> Result<Self, rusqlite::Error> {
-        let mode_str: String = row.get(7)?;
+        let mode_str: String = row.get(5)?;
         Ok(Self {
             id: row.get(0)?,
             _session_id: row.get(1)?,
-            _user_settings_id: row.get(2)?,
-            prompt: row.get(3)?,
-            result_summary: row.get(4)?,
-            _file_changes: row.get(5)?,
+            prompt: row.get(2)?,
+            result_summary: row.get(3)?,
+            _file_changes: row.get(4)?,
             mode: AgentModeType::from_str(&mode_str),
-            _created_at: row.get(7)?,
+            _created_at: row.get(6)?,
         })
     }
 }
@@ -44,7 +42,6 @@ impl SessionRequestsRepository {
     pub fn create(
         &self,
         session_id: i64,
-        user_settings_id: i64,
         prompt: &str,
         mode: AgentModeType,
     ) -> Result<SessionRequestRow, String> {
@@ -55,8 +52,8 @@ impl SessionRequestsRepository {
             .map_err(|e| format!("Failed to get connection: {}", e))?;
 
         conn.execute(
-                "INSERT INTO session_requests (session_id, user_settings_id, prompt, mode, created_at) VALUES (?, ?, ?, ?, ?)",
-                params![session_id, user_settings_id, prompt, mode.as_str(), created_at],
+                "INSERT INTO session_requests (session_id, prompt, mode, created_at) VALUES (?, ?, ?, ?)",
+                params![session_id, prompt, mode.as_str(), created_at],
             )
             .map_err(|e| e.to_string())?;
 
@@ -65,7 +62,6 @@ impl SessionRequestsRepository {
         Ok(SessionRequestRow {
             id,
             _session_id: session_id,
-            _user_settings_id: user_settings_id,
             prompt: prompt.to_string(),
             result_summary: None,
             _file_changes: None,
@@ -104,6 +100,22 @@ impl SessionRequestsRepository {
         Ok(())
     }
 
+    pub fn create_with_result_and_changes(
+        &self,
+        session_id: i64,
+        prompt: &str,
+        mode: AgentModeType,
+        result_summary: &str,
+        file_changes: Option<&str>,
+    ) -> Result<SessionRequestRow, String> {
+        let request_row = self.create(session_id, prompt, mode)?;
+        self.update_result(request_row.id, result_summary)?;
+        if let Some(changes) = file_changes {
+            self.update_file_changes(request_row.id, changes)?;
+        }
+        Ok(request_row)
+    }
+
     /// Find all requests for a session, ordered by creation time
     pub fn find_by_session(&self, session_id: i64) -> Result<Vec<SessionRequestRow>, String> {
         let conn = self
@@ -111,7 +123,7 @@ impl SessionRequestsRepository {
             .get()
             .map_err(|e| format!("Failed to get connection: {}", e))?;
         let mut stmt = conn
-            .prepare("SELECT id, session_id, user_settings_id, prompt, result_summary, file_changes, mode, created_at FROM session_requests WHERE session_id = ? ORDER BY created_at ASC")
+            .prepare("SELECT id, session_id, prompt, result_summary, file_changes, mode, created_at FROM session_requests WHERE session_id = ? ORDER BY created_at ASC")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt

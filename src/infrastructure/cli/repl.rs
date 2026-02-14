@@ -473,7 +473,6 @@ pub(crate) fn update_model_selection_in_db(
                     models_repo
                         .create(
                             ModelType::Local,
-                            None,
                             Some(&gguf_path),
                             None,
                             ModelAuthType::Local,
@@ -504,7 +503,7 @@ pub(crate) fn update_model_selection_in_db(
                 Some(model) => model.id,
                 None => {
                     models_repo
-                        .create(ModelType::OpenAI, None, None, Some(model_name), auth_type)
+                        .create(ModelType::OpenAI, None, Some(model_name), auth_type)
                         .map_err(|e| e.to_string())?
                         .id
                 }

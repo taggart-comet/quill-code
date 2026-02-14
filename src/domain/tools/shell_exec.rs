@@ -82,9 +82,7 @@ fn is_allowed_read_only_command(command: &str) -> bool {
             return false;
         }
 
-        return parts
-            .iter()
-            .all(|part| is_allowed_read_only_command(part));
+        return parts.iter().all(|part| is_allowed_read_only_command(part));
     }
 
     if trimmed.contains(';')
@@ -485,7 +483,6 @@ mod tests {
     struct TestRequest {
         root: PathBuf,
         current_request: String,
-        history: Vec<SessionRequest>,
         final_message: Option<String>,
     }
 
@@ -494,7 +491,6 @@ mod tests {
             Self {
                 root: root.to_path_buf(),
                 current_request: "test".to_string(),
-                history: Vec::new(),
                 final_message: None,
             }
         }
@@ -502,7 +498,7 @@ mod tests {
 
     impl Request for TestRequest {
         fn history(&self) -> &[SessionRequest] {
-            &self.history
+            &[]
         }
 
         fn current_request(&self) -> &str {

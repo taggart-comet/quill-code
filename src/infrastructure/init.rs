@@ -368,7 +368,6 @@ pub fn apply_model_selection(
                     let model = models_repo
                         .create(
                             ModelType::Local,
-                            None,
                             Some(&gguf_path),
                             None,
                             ModelAuthType::Local,
@@ -476,7 +475,7 @@ pub fn apply_model_selection(
                 Some(id) => id,
                 None => {
                     models_repo
-                        .create(ModelType::OpenAI, None, None, Some(&model_name), auth_type)
+                        .create(ModelType::OpenAI, None, Some(&model_name), auth_type)
                         .map_err(InitError::Repository)?
                         .id
                 }

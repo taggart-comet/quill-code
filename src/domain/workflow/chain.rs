@@ -1,4 +1,6 @@
 use super::step::ChainStep;
+use crate::domain::tools::FileChange;
+use std::collections::HashMap;
 use super::step::StepType;
 use crate::domain::todo::TodoList;
 use crate::domain::tools::ToolResult;
@@ -97,6 +99,12 @@ impl Chain {
     /// Returns a string describing how many tool calls were executed and whether it was successful
     /// This should be saved to session_request.result_summary
     pub fn get_summary(&self) -> String {
+        if let Some(last_step) = self.steps.last() {
+            if last_step.step_type == StepType::AssistantResponse.as_str() {
+                return last_step.tool_output.clone().unwrap_or_default();
+            }
+        }
+
         let tool_call_count = self
             .steps
             .iter()
@@ -115,6 +123,39 @@ impl Chain {
 
     pub fn set_system_prompt(&mut self, system_prompt: String) {
         self.system_prompt = system_prompt;
+    }
+
+    pub fn merged_file_changes(&self) -> Vec<FileChange> {
+        let file_changes: Vec<_> = self
+            .steps()
+            .iter()
+            .filter(|step| step.tool_name.as_deref() == Some("patch_files"))
+            .filter_map(|step| step.file_changes.as_ref())
+            .flatten()
+            .cloned()
+            .collect();
+
+        let mut merged_changes: Vec<FileChange> = Vec::new();
+        let mut index_by_path: HashMap<String, usize> = HashMap::new();
+
+        for change in file_changes {
+            if let Some(&idx) = index_by_path.get(&change.path) {
+                let existing = &mut merged_changes[idx];
+                existing.added_lines += change.added_lines;
+                existing.deleted_lines += change.deleted_lines;
+                if !change.unified_diff.is_empty() {
+                    if !existing.unified_diff.is_empty() {
+                        existing.unified_diff.push('\n');
+                    }
+                    existing.unified_diff.push_str(&change.unified_diff);
+                }
+            } else {
+                index_by_path.insert(change.path.clone(), merged_changes.len());
+                merged_changes.push(change);
+            }
+        }
+
+        merged_changes
     }
 
     #[allow(dead_code)]

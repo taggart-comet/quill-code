@@ -598,9 +598,7 @@ fn extract_user_facing_error(err: &domain::session::ServiceError) -> String {
     }
 
     // For other errors, strip the nested "workflow error: " prefix chain
-    let cleaned = full
-        .strip_prefix("workflow error: ")
-        .unwrap_or(&full);
+    let cleaned = full.strip_prefix("workflow error: ").unwrap_or(&full);
     cleaned.to_string()
 }
 
@@ -758,7 +756,6 @@ mod tests {
             .find(|model| model.model_name.as_deref() == Some("gpt-test"));
         assert!(model.is_some());
         let model = model.unwrap();
-        assert!(model._api_key.is_none());
         assert_eq!(model.auth_type, domain::ModelAuthType::ApiKey);
 
         let settings_repo = UserSettingsRepository::new(&*conn_guard);

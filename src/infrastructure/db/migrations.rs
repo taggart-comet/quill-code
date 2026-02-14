@@ -2,10 +2,7 @@ use rusqlite::Connection;
 use rusqlite_migration::{Migrations, M};
 
 pub fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![
-        M::up(include_str!("sql/00-initial-schema.sql")),
-        // Future: M::up(include_str!("sql/01-add-foo.sql")),
-    ])
+    Migrations::new(vec![M::up(include_str!("sql/00-initial-schema.sql"))])
 }
 
 /// Bridge from legacy meta-table versioning to PRAGMA user_version.

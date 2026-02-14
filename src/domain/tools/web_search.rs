@@ -324,8 +324,7 @@ mod tests {
         checker::{PermissionChecker, PermissionPrompter},
         store::{PermissionStore, StoreError},
         types::{
-            PermissionConfig, PermissionRequest, PermissionScope, SystemPermissionDecision,
-            UserPermissionDecision,
+            PermissionConfig, PermissionRequest, SystemPermissionDecision, UserPermissionDecision,
         },
     };
     use crate::domain::session::{Request, SessionRequest};
@@ -345,13 +344,6 @@ mod tests {
             Self {
                 created: Mutex::new(Vec::new()),
                 tool_permission: Mutex::new(None),
-            }
-        }
-
-        fn with_tool_permission(permission: crate::domain::permissions::types::Permission) -> Self {
-            Self {
-                created: Mutex::new(Vec::new()),
-                tool_permission: Mutex::new(Some(permission)),
             }
         }
     }

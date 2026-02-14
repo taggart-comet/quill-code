@@ -274,29 +274,14 @@ impl OpenAIClient {
         // Read SSE stream as raw bytes to avoid encoding issues with chunked transfer
         let mut body_bytes = Vec::new();
         let mut buffer = [0u8; 8192];
+        let mut read_error: Option<String> = None;
         loop {
             match response.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(read_len) => body_bytes.extend_from_slice(&buffer[..read_len]),
                 Err(e) => {
-                    let partial_body = if body_bytes.is_empty() {
-                        None
-                    } else {
-                        Some(Self::format_body_excerpt(
-                            &String::from_utf8_lossy(&body_bytes),
-                            4000,
-                        ))
-                    };
-                    return Err(Box::new(OpenAIClientError::BodyRead {
-                        source: e.to_string(),
-                        status,
-                        content_encoding: content_encoding.clone(),
-                        content_type: content_type.clone(),
-                        content_length,
-                        transfer_encoding: transfer_encoding.clone(),
-                        response_headers: response_headers.clone(),
-                        partial_body,
-                    }));
+                    read_error = Some(e.to_string());
+                    break;
                 }
             }
         }
@@ -307,12 +292,39 @@ impl OpenAIClient {
         let dto = match Self::parse_sse_response(&body) {
             Ok(v) => v,
             Err(e) => {
+                if let Some(error_message) = read_error {
+                    let partial_body = if body.is_empty() {
+                        None
+                    } else {
+                        Some(Self::format_body_excerpt(&body, 4000))
+                    };
+                    if let Some(t) = tracer {
+                        t.end_span(&self.model);
+                    }
+                    return Err(Box::new(OpenAIClientError::BodyRead {
+                        source: error_message,
+                        status,
+                        content_encoding: content_encoding.clone(),
+                        content_type: content_type.clone(),
+                        content_length,
+                        transfer_encoding: transfer_encoding.clone(),
+                        response_headers: response_headers.clone(),
+                        partial_body,
+                    }));
+                }
                 if let Some(t) = tracer {
                     t.end_span(&self.model);
                 }
                 return Err(e);
             }
         };
+
+        if let Some(error_message) = read_error {
+            log::warn!(
+                "SSE stream ended with read error but response.completed was parsed: {}",
+                error_message
+            );
+        }
 
         // Add response as JSON and end span
         if let Some(tracer) = &mut tracer {

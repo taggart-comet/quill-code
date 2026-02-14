@@ -6,7 +6,6 @@ use rusqlite::{params, Connection, Row};
 pub struct ModelRow {
     pub id: i64,
     pub model_type: ModelType,
-    pub _api_key: Option<String>,
     pub gguf_file_path: Option<String>,
     pub model_name: Option<String>,
     pub auth_type: ModelAuthType,
@@ -17,7 +16,7 @@ impl ModelRow {
     fn from_row(row: &Row) -> Result<Self, rusqlite::Error> {
         let model_type_str: String = row.get(1)?;
         let model_type = ModelType::from_str(&model_type_str).unwrap_or(ModelType::Local);
-        let auth_type_str: Option<String> = row.get(5)?;
+        let auth_type_str: Option<String> = row.get(4)?;
         let auth_type = match auth_type_str.as_deref() {
             Some(value) => ModelAuthType::from_str(value),
             None => {
@@ -32,11 +31,10 @@ impl ModelRow {
         Ok(Self {
             id: row.get(0)?,
             model_type,
-            _api_key: row.get(2)?,
-            gguf_file_path: row.get(3)?,
-            model_name: row.get(4)?,
+            gguf_file_path: row.get(2)?,
+            model_name: row.get(3)?,
             auth_type,
-            _date_added: row.get(6)?,
+            _date_added: row.get(5)?,
         })
     }
 }
@@ -53,7 +51,7 @@ impl<'a> ModelsRepository<'a> {
     pub fn find_by_id(&self, id: i64) -> Result<Option<ModelRow>, String> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, type, api_key, gguf_file_path, model_name, auth_type, date_added FROM models WHERE id = ?")
+            .prepare("SELECT id, type, gguf_file_path, model_name, auth_type, date_added FROM models WHERE id = ?")
             .map_err(|e| e.to_string())?;
 
         let result = stmt
@@ -67,7 +65,7 @@ impl<'a> ModelsRepository<'a> {
     pub fn find_by_type(&self, model_type: ModelType) -> Result<Vec<ModelRow>, String> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, type, api_key, gguf_file_path, model_name, auth_type, date_added FROM models WHERE type = ? ORDER BY date_added DESC")
+            .prepare("SELECT id, type, gguf_file_path, model_name, auth_type, date_added FROM models WHERE type = ? ORDER BY date_added DESC")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
@@ -85,7 +83,6 @@ impl<'a> ModelsRepository<'a> {
     pub fn create(
         &self,
         model_type: ModelType,
-        api_key: Option<&str>,
         gguf_file_path: Option<&str>,
         model_name: Option<&str>,
         auth_type: ModelAuthType,
@@ -94,10 +91,9 @@ impl<'a> ModelsRepository<'a> {
 
         self.conn
             .execute(
-                "INSERT INTO models (type, api_key, gguf_file_path, model_name, auth_type, date_added) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO models (type, gguf_file_path, model_name, auth_type, date_added) VALUES (?, ?, ?, ?, ?)",
                 params![
                     model_type.as_str(),
-                    api_key,
                     gguf_file_path,
                     model_name,
                     auth_type.as_str(),
@@ -111,7 +107,6 @@ impl<'a> ModelsRepository<'a> {
         Ok(ModelRow {
             id,
             model_type,
-            _api_key: api_key.map(|s| s.to_string()),
             gguf_file_path: gguf_file_path.map(|s| s.to_string()),
             model_name: model_name.map(|s| s.to_string()),
             auth_type,

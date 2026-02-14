@@ -1,4 +1,5 @@
 mod agent_mode;
+pub mod plan;
 mod bt;
 pub mod permissions;
 mod project;

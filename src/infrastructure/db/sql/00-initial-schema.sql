@@ -22,7 +22,6 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS models (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     type TEXT NOT NULL,
-    api_key TEXT,
     gguf_file_path TEXT,
     date_added TEXT NOT NULL,
     model_name TEXT,
@@ -49,14 +48,12 @@ CREATE TABLE IF NOT EXISTS user_settings (
 CREATE TABLE IF NOT EXISTS session_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL,
-    user_settings_id INTEGER,
     prompt TEXT NOT NULL,
     result_summary TEXT,
     file_changes TEXT,
     mode TEXT NOT NULL DEFAULT 'build',
     created_at TEXT NOT NULL,
     FOREIGN KEY (session_id) REFERENCES sessions(id),
-    FOREIGN KEY (user_settings_id) REFERENCES user_settings(id)
 );
 
 CREATE TABLE IF NOT EXISTS permissions (

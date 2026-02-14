@@ -32,7 +32,7 @@ CLI thread and agent thread communicate via `EventBus` (`src/infrastructure/even
 | `src/domain/session/service.rs` | Session lifecycle — routes Build/BuildFromPlan modes, orchestrates TODO-item sub-agents with user confirmation between items |
 | `src/infrastructure/inference/openai.rs` | OpenAI inference engine |
 | `src/infrastructure/inference/local.rs` | Local GGUF model inference (llama-cpp-2) |
-| `src/infrastructure/db.rs` | SQLite connection pooling, schema migrations |
+| `src/infrastructure/db/` | SQLite connection pooling, schema migrations |
 | `src/utils/parsing/` | Tree-sitter based code parsing (Rust, Python, JS, TS, Go, Java, C, C++, Ruby, etc.) |
 
 ## User Settings

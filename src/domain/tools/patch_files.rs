@@ -462,7 +462,6 @@ mod tests {
     struct TestRequest {
         root: PathBuf,
         current_request: String,
-        history: Vec<SessionRequest>,
         final_message: Option<String>,
     }
 
@@ -471,7 +470,6 @@ mod tests {
             Self {
                 root: root.to_path_buf(),
                 current_request: "test".to_string(),
-                history: Vec::new(),
                 final_message: None,
             }
         }
@@ -479,7 +477,7 @@ mod tests {
 
     impl Request for TestRequest {
         fn history(&self) -> &[SessionRequest] {
-            &self.history
+            &[]
         }
 
         fn current_request(&self) -> &str {

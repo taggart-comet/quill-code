@@ -80,7 +80,7 @@ impl Tool for UpdateTodoList {
             }
         };
 
-        // Get or create TODO list
+        // Get or create the list
         let repo = TodoListRepository::new(&*conn);
         let todo_list_row = match repo.get_or_create_for_session(self.session_id) {
             Ok(list) => list,
@@ -113,7 +113,7 @@ impl Tool for UpdateTodoList {
         ToolResult::ok(
             self.name().to_string(),
             input.raw,
-            "TODO list updated successfully.".to_string(),
+            "TODO list updated successfully. See the changes in the auto-updated message above.".to_string(),
             input.call_id,
         )
     }

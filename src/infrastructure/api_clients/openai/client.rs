@@ -1,6 +1,7 @@
 use super::dto::ResponseDTO;
 use super::translator::{build_llm_result, build_request_dto};
 use crate::infrastructure::inference::LLMInferenceResult;
+use serde_json::Value;
 use std::error::Error;
 use std::io::Read;
 
@@ -127,6 +128,7 @@ impl OpenAIClient {
         mut tracer: Option<&mut openai_agents_tracing::TracingFacade>,
     ) -> Result<LLMInferenceResult, Box<dyn Error + Send + Sync>> {
         let max_attempts = 3;
+        let mut notext_retried = false;
         for attempt in 1..=max_attempts {
             match self.call_responses_api_inner(
                 auth_token,
@@ -137,6 +139,27 @@ impl OpenAIClient {
             ) {
                 Ok(result) => return Ok(result),
                 Err(e) => {
+                    if e.downcast_ref::<OpenAIClientError>()
+                        .map(|err| matches!(err, OpenAIClientError::NoText { .. }))
+                        .unwrap_or(false)
+                    {
+                        if !notext_retried {
+                            notext_retried = true;
+                            log::warn!(
+                                "OpenAI returned empty output_text, retrying once (attempt {}/{}).",
+                                attempt,
+                                max_attempts
+                            );
+                            continue;
+                        }
+
+                        let message = "System Message: model malfunction, return empty text";
+                        return Ok(LLMInferenceResult {
+                            summary: message.to_string(),
+                            raw_output: message.to_string(),
+                            tool_call: None,
+                        });
+                    }
                     let error_str = e.to_string();
                     let mut should_retry = error_str.contains("error sending request")
                         || error_str.contains("connection")
@@ -289,10 +312,40 @@ impl OpenAIClient {
         log::debug!("SSE response length: {} bytes", body.len());
         log::trace!("SSE response body: {}", &body[..body.len().min(2000)]);
 
+        let response_id = Self::extract_response_id_from_sse(&body);
+        let allow_retrieve = matches!(auth_token, AuthToken::ApiKey(_));
+        let mut retrieved_meta: Option<(Option<String>, String)> = None;
         let dto = match Self::parse_sse_response(&body) {
             Ok(v) => v,
             Err(e) => {
-                if let Some(error_message) = read_error {
+                if !allow_retrieve {
+                    if let Some(t) = tracer {
+                        t.end_span(&self.model);
+                    }
+                    if !body.contains("response.completed") {
+                        return Err(Box::new(OpenAIClientError::NoText {
+                            body: format!(
+                                "empty response from SSE stream; sse_body={}",
+                                Self::format_body_excerpt(&body, 4000)
+                            ),
+                        }));
+                    }
+                    return Err(e);
+                }
+                if let Some(response_id) = response_id.as_deref() {
+                    match self.fetch_response_with_retry(auth_token, response_id, 4, 750) {
+                        Ok((fallback, status, raw_body)) => {
+                            retrieved_meta = Some((status, raw_body));
+                            fallback
+                        }
+                        Err(fetch_err) => {
+                            if let Some(t) = tracer {
+                                t.end_span(&self.model);
+                            }
+                            return Err(fetch_err);
+                        }
+                    }
+                } else if let Some(error_message) = read_error {
                     let partial_body = if body.is_empty() {
                         None
                     } else {
@@ -311,11 +364,12 @@ impl OpenAIClient {
                         response_headers: response_headers.clone(),
                         partial_body,
                     }));
+                } else {
+                    if let Some(t) = tracer {
+                        t.end_span(&self.model);
+                    }
+                    return Err(e);
                 }
-                if let Some(t) = tracer {
-                    t.end_span(&self.model);
-                }
-                return Err(e);
             }
         };
 
@@ -334,13 +388,60 @@ impl OpenAIClient {
             tracer.end_span(&self.model);
         }
 
-        let result = build_llm_result(dto, tools);
+        let mut result = build_llm_result(dto, tools);
         if result.summary.is_empty() && result.tool_call.is_none() {
+            if allow_retrieve {
+                if let Some(response_id) = response_id.as_deref() {
+                    if let Ok((fallback, status, raw_body)) =
+                        self.fetch_response_with_retry(auth_token, response_id, 4, 750)
+                    {
+                        retrieved_meta = Some((status, raw_body));
+                        result = build_llm_result(fallback, tools);
+                    }
+                }
+            }
+        }
+        if result.summary.is_empty() && result.tool_call.is_none() {
+            if !body.contains("response.completed") {
+                let retrieve_info = retrieved_meta.as_ref().map(|(status, raw_body)| {
+                    format!(
+                        "retrieve_status={}; retrieve_body={}",
+                        status.as_deref().unwrap_or("<missing>"),
+                        Self::format_body_excerpt(raw_body, 4000)
+                    )
+                });
+                return Err(Box::new(OpenAIClientError::BodyRead {
+                    source: match retrieve_info {
+                        Some(info) => {
+                            format!("SSE stream ended before response.completed; {}", info)
+                        }
+                        None => "SSE stream ended before response.completed".to_string(),
+                    },
+                    status,
+                    content_encoding: content_encoding.clone(),
+                    content_type: content_type.clone(),
+                    content_length,
+                    transfer_encoding: transfer_encoding.clone(),
+                    response_headers: response_headers.clone(),
+                    partial_body: Some(Self::format_body_excerpt(&body, 4000)),
+                }));
+            }
             return Err(Box::new(OpenAIClientError::NoText {
-                body: format!(
-                    "empty response from SSE stream; sse_body={}",
-                    Self::format_body_excerpt(&body, 4000)
-                ),
+                body: {
+                    let mut message = format!(
+                        "empty response from SSE stream; sse_body={}",
+                        Self::format_body_excerpt(&body, 4000)
+                    );
+                    if let Some((status, raw_body)) = retrieved_meta.as_ref() {
+                        message.push_str("; ");
+                        message.push_str(&format!(
+                            "retrieve_status={}; retrieve_body={}",
+                            status.as_deref().unwrap_or("<missing>"),
+                            Self::format_body_excerpt(raw_body, 4000)
+                        ));
+                    }
+                    message
+                },
             }));
         }
 
@@ -433,6 +534,141 @@ impl OpenAIClient {
                 ),
             }) as Box<dyn Error + Send + Sync>
         })
+    }
+
+    fn extract_response_id_from_sse(body: &str) -> Option<String> {
+        let mut current_event: Option<String> = None;
+        for line in body.lines() {
+            if let Some(event_name) = line.strip_prefix("event:") {
+                current_event = Some(event_name.trim().to_string());
+            } else if let Some(data_payload) = line.strip_prefix("data:") {
+                let data = data_payload.trim_start();
+                let is_created = current_event
+                    .as_deref()
+                    .map(|name| name == "response.created")
+                    .unwrap_or(false);
+                if is_created {
+                    if let Ok(json) = serde_json::from_str::<Value>(data) {
+                        if let Some(id) = json
+                            .get("response")
+                            .and_then(|r| r.get("id"))
+                            .and_then(|v| v.as_str())
+                        {
+                            return Some(id.to_string());
+                        }
+                        if let Some(id) = json.get("id").and_then(|v| v.as_str()) {
+                            return Some(id.to_string());
+                        }
+                    }
+                }
+            }
+            if line.is_empty() {
+                current_event = None;
+            }
+        }
+        None
+    }
+
+    fn parse_response_json(body: &str) -> Result<ResponseDTO, Box<dyn Error + Send + Sync>> {
+        if let Ok(dto) = serde_json::from_str::<ResponseDTO>(body.trim()) {
+            return Ok(dto);
+        }
+
+        let wrapper: Value = serde_json::from_str(body.trim()).map_err(|e| {
+            Box::new(OpenAIClientError::Deserialize {
+                source: e,
+                body: Self::format_body_excerpt(body, 4000),
+            }) as Box<dyn Error + Send + Sync>
+        })?;
+
+        let response_obj = wrapper.get("response").unwrap_or(&wrapper);
+        serde_json::from_value::<ResponseDTO>(response_obj.clone()).map_err(|e| {
+            Box::new(OpenAIClientError::Deserialize {
+                source: e,
+                body: response_obj.to_string(),
+            }) as Box<dyn Error + Send + Sync>
+        })
+    }
+
+    fn fetch_response_with_retry(
+        &self,
+        auth_token: &AuthToken,
+        response_id: &str,
+        max_attempts: usize,
+        delay_ms: u64,
+    ) -> Result<(ResponseDTO, Option<String>, String), Box<dyn Error + Send + Sync>> {
+        let mut last: Option<(ResponseDTO, Option<String>, String)> = None;
+        for attempt in 1..=max_attempts {
+            let fetched = self.fetch_response_with_meta(auth_token, response_id)?;
+            let status = fetched.1.clone().unwrap_or_default();
+            last = Some(fetched);
+            if status == "completed" || status == "failed" {
+                return Ok(last.unwrap());
+            }
+            if attempt < max_attempts {
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            }
+        }
+
+        Ok(last.unwrap())
+    }
+
+    fn fetch_response_with_meta(
+        &self,
+        auth_token: &AuthToken,
+        response_id: &str,
+    ) -> Result<(ResponseDTO, Option<String>, String), Box<dyn Error + Send + Sync>> {
+        let url = match auth_token {
+            AuthToken::OAuth { .. } => format!(
+                "https://chatgpt.com/backend-api/codex/responses/{}",
+                response_id
+            ),
+            AuthToken::ApiKey(_) => format!("https://api.openai.com/v1/responses/{}", response_id),
+        };
+
+        let mut request_builder = self.client.get(url).header("Accept", "application/json");
+        match auth_token {
+            AuthToken::ApiKey(key) => {
+                request_builder =
+                    request_builder.header("Authorization", format!("Bearer {}", key));
+            }
+            AuthToken::OAuth { token, account_id } => {
+                request_builder =
+                    request_builder.header("Authorization", format!("Bearer {}", token));
+                if let Some(acc_id) = account_id {
+                    request_builder = request_builder.header("ChatGPT-Account-Id", acc_id);
+                }
+            }
+        }
+
+        let response = request_builder.send()?;
+        let status = response.status();
+        let response_url = response.url().to_string();
+        let body = response
+            .text()
+            .unwrap_or_else(|e| format!("(failed to read body: {})", e));
+
+        if !status.is_success() {
+            return Err(Box::new(OpenAIClientError::Api {
+                status,
+                body,
+                request_body: format!("GET {}", response_url),
+            }));
+        }
+
+        let wrapper: Value = serde_json::from_str(body.trim()).map_err(|e| {
+            Box::new(OpenAIClientError::Deserialize {
+                source: e,
+                body: Self::format_body_excerpt(&body, 4000),
+            }) as Box<dyn Error + Send + Sync>
+        })?;
+        let status_value = wrapper
+            .get("status")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string());
+        let dto = Self::parse_response_json(&body)?;
+
+        Ok((dto, status_value, body))
     }
 
     fn format_body_excerpt(body: &str, max_len: usize) -> String {

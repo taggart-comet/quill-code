@@ -14,7 +14,7 @@ use ratatui::widgets::{Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 use std::cmp::min;
 
-pub fn render(frame: &mut Frame, state: &UiState) {
+pub fn render(frame: &mut Frame, state: &mut UiState) {
     let size = frame.size();
     let theme = Theme::new();
     frame.render_widget(
@@ -23,12 +23,13 @@ pub fn render(frame: &mut Frame, state: &UiState) {
     );
     let header_height = 3u16;
     let info_height = 3u16;
-    let mut input_lines = state.input_line_count();
-    input_lines = min(
-        input_lines,
+    let input_content_lines = input::visual_line_count(state, size.width);
+    let input_lines = min(
+        input_content_lines,
         crate::infrastructure::cli::state::INPUT_MAX_HEIGHT,
     );
-    let mut input_box_height = (input_lines + INPUT_PADDING.top as usize + INPUT_PADDING.bottom as usize) as u16;
+    let mut input_box_height =
+        (input_lines + INPUT_PADDING.top as usize + INPUT_PADDING.bottom as usize) as u16;
 
     let indicator_height = 1u16;
     let attachment_indicator_height = if state.attached_images.is_empty() {
@@ -44,8 +45,11 @@ pub fn render(frame: &mut Frame, state: &UiState) {
     if fixed_height > size.height {
         let overflow = fixed_height - size.height;
         let reduced = input_box_height.saturating_sub(overflow);
-        input_box_height =
-            reduced.max((crate::infrastructure::cli::state::INPUT_MIN_HEIGHT + INPUT_PADDING.top as usize + INPUT_PADDING.bottom as usize) as u16);
+        input_box_height = reduced.max(
+            (crate::infrastructure::cli::state::INPUT_MIN_HEIGHT
+                + INPUT_PADDING.top as usize
+                + INPUT_PADDING.bottom as usize) as u16,
+        );
     }
 
     let constraints = if state.attached_images.is_empty() {

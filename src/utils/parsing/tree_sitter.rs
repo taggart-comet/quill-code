@@ -159,7 +159,6 @@ impl ObjectKind {
             ObjectKind::Rule => "rule",
         }
     }
-
 }
 
 #[derive(Debug, Clone)]

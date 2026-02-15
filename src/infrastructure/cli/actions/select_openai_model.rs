@@ -60,10 +60,7 @@ pub fn handle_model_entry(
     Ok(())
 }
 
-pub fn handle_auth_method_api_key(
-    conn: &DbPool,
-    state: &mut UiState,
-) -> Result<(), String> {
+pub fn handle_auth_method_api_key(conn: &DbPool, state: &mut UiState) -> Result<(), String> {
     if insert_openai_key::api_key_missing(conn)? {
         insert_openai_key::begin_prompt(state, false);
     } else {

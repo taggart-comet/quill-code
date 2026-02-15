@@ -181,7 +181,10 @@ impl EventController {
                             drop(conn_guard);
 
                             let requests_repo = crate::repository::SessionRequestsRepository::new(self.conn.clone());
-                            let requests = match requests_repo.find_by_session(session_id) {
+                            let requests = match requests_repo.find_by_session(
+                                session_id,
+                                session_row.history_from_request_id,
+                            ) {
                                 Ok(rows) => rows,
                                 Err(e) => {
                                     send_failure_and_continue!(self, e);

@@ -75,30 +75,62 @@ impl SessionRequestStepsRepository {
     /// Load all steps for all requests in a session
     /// Returns steps ordered by request creation time and step index
     /// This provides the complete conversation history for context
-    pub fn load_steps_for_session(&self, session_id: i64) -> Result<Vec<ChainStep>, String> {
+    pub fn load_steps_for_session(
+        &self,
+        session_id: i64,
+        history_from_request_id: Option<i64>,
+    ) -> Result<Vec<ChainStep>, String> {
         let conn = self
             .conn
             .get()
             .map_err(|e| format!("Failed to get database connection: {}", e))?;
 
-        let mut stmt = conn
-            .prepare(
-                "SELECT srs.step_json
-                 FROM session_request_steps srs
-                 JOIN session_requests sr ON srs.request_id = sr.id
-                 WHERE sr.session_id = ?1
-                 ORDER BY sr.created_at ASC, srs.step_index ASC",
-            )
-            .map_err(|e| format!("Failed to prepare statement: {}", e))?;
+        let steps = match history_from_request_id {
+            Some(request_id) => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT srs.step_json
+                         FROM session_request_steps srs
+                         JOIN session_requests sr ON srs.request_id = sr.id
+                         WHERE sr.session_id = ?1 AND sr.id >= ?2
+                         ORDER BY sr.created_at ASC, srs.step_index ASC",
+                    )
+                    .map_err(|e| format!("Failed to prepare statement: {}", e))?;
 
-        let steps = stmt
-            .query_map(params![session_id], |row| {
-                let json: String = row.get(0)?;
-                Ok(json)
-            })
-            .map_err(|e| format!("Failed to query steps: {}", e))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("Failed to collect steps: {}", e))?;
+                let mapped = stmt
+                    .query_map(params![session_id, request_id], |row| {
+                        let json: String = row.get(0)?;
+                        Ok(json)
+                    })
+                    .map_err(|e| format!("Failed to query steps: {}", e))?;
+
+                mapped
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("Failed to collect steps: {}", e))?
+            }
+            None => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT srs.step_json
+                         FROM session_request_steps srs
+                         JOIN session_requests sr ON srs.request_id = sr.id
+                         WHERE sr.session_id = ?1
+                         ORDER BY sr.created_at ASC, srs.step_index ASC",
+                    )
+                    .map_err(|e| format!("Failed to prepare statement: {}", e))?;
+
+                let mapped = stmt
+                    .query_map(params![session_id], |row| {
+                        let json: String = row.get(0)?;
+                        Ok(json)
+                    })
+                    .map_err(|e| format!("Failed to query steps: {}", e))?;
+
+                mapped
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("Failed to collect steps: {}", e))?
+            }
+        };
 
         let mut result = Vec::new();
         for json in steps {

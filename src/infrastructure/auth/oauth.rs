@@ -1,9 +1,9 @@
-use oauth2::{
-    AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge,
-    PkceCodeVerifier, RedirectUrl, RefreshToken, Scope, TokenResponse, TokenUrl,
-};
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::http_client;
+use oauth2::{
+    AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, PkceCodeVerifier,
+    RedirectUrl, RefreshToken, Scope, TokenResponse, TokenUrl,
+};
 use sha2::{Digest, Sha256};
 use std::sync::mpsc;
 use std::thread;
@@ -41,8 +41,7 @@ pub fn initiate_oauth_flow() -> Result<OAuthTokens, String> {
     hasher.update(code_verifier.as_bytes());
 
     use base64::Engine;
-    let _challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(hasher.finalize());
+    let _challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hasher.finalize());
 
     let pkce_verifier = PkceCodeVerifier::new(code_verifier);
     let pkce_challenge = PkceCodeChallenge::from_code_verifier_sha256(&pkce_verifier);
@@ -64,7 +63,8 @@ pub fn initiate_oauth_flow() -> Result<OAuthTokens, String> {
         .url();
 
     // Add OpenCode-specific query parameters
-    auth_url.query_pairs_mut()
+    auth_url
+        .query_pairs_mut()
         .append_pair("id_token_add_organizations", "true")
         .append_pair("codex_cli_simplified_flow", "true")
         .append_pair("originator", "quillcode");
@@ -76,8 +76,7 @@ pub fn initiate_oauth_flow() -> Result<OAuthTokens, String> {
     log::info!("Starting OAuth flow, opening browser...");
 
     // Open browser
-    open::that(auth_url.to_string())
-        .map_err(|e| format!("Failed to open browser: {}", e))?;
+    open::that(auth_url.to_string()).map_err(|e| format!("Failed to open browser: {}", e))?;
 
     // Wait for callback with timeout
     let (tx, rx) = mpsc::channel();
@@ -99,20 +98,21 @@ pub fn initiate_oauth_flow() -> Result<OAuthTokens, String> {
                 </body>
                 </html>
             "#;
-            let _ = request.respond(Response::from_string(html)
-                .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html"[..]).unwrap()));
+            let _ = request.respond(Response::from_string(html).with_header(
+                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html"[..]).unwrap(),
+            ));
 
             let _ = tx.send(url_str);
         }
     });
 
     // Wait for callback
-    let callback_url = rx.recv_timeout(Duration::from_secs(120))
+    let callback_url = rx
+        .recv_timeout(Duration::from_secs(120))
         .map_err(|_| "OAuth timeout: No response received within 2 minutes".to_string())?;
 
     // Parse callback URL
-    let url = url::Url::parse(&callback_url)
-        .map_err(|e| format!("Invalid callback URL: {}", e))?;
+    let url = url::Url::parse(&callback_url).map_err(|e| format!("Invalid callback URL: {}", e))?;
 
     // Extract code and state from query parameters
     let mut code = None;
@@ -144,11 +144,13 @@ pub fn initiate_oauth_flow() -> Result<OAuthTokens, String> {
         .map_err(|e| format!("Token exchange failed: {}", e))?;
 
     let access_token = token_response.access_token().secret().clone();
-    let refresh_token = token_response.refresh_token()
+    let refresh_token = token_response
+        .refresh_token()
         .ok_or("No refresh token received")?
         .secret()
         .clone();
-    let expires_in = token_response.expires_in()
+    let expires_in = token_response
+        .expires_in()
         .ok_or("No expiration time received")?
         .as_secs() as i64;
 
@@ -182,10 +184,12 @@ pub fn refresh_oauth_tokens(refresh_token: &str) -> Result<OAuthTokens, String> 
         .map_err(|e| format!("Token refresh failed: {}", e))?;
 
     let access_token = token_response.access_token().secret().clone();
-    let refresh_token = token_response.refresh_token()
+    let refresh_token = token_response
+        .refresh_token()
         .map(|t| t.secret().clone())
         .unwrap_or_else(|| refresh_token.to_string());
-    let expires_in = token_response.expires_in()
+    let expires_in = token_response
+        .expires_in()
         .ok_or("No expiration time received")?
         .as_secs() as i64;
 

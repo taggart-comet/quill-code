@@ -23,7 +23,15 @@ pub fn submit_settings(
     web_search: bool,
     max_tool_calls: i32,
 ) -> Result<(), String> {
-    apply_settings(bus, conn, state, behavior_trees, openai_tracing, web_search, max_tool_calls)?;
+    apply_settings(
+        bus,
+        conn,
+        state,
+        behavior_trees,
+        openai_tracing,
+        web_search,
+        max_tool_calls,
+    )?;
     state.mode = UiMode::Normal;
     Ok(())
 }
@@ -37,7 +45,13 @@ pub fn apply_settings(
     web_search: bool,
     max_tool_calls: i32,
 ) -> Result<(), String> {
-    update_settings_in_db(conn, behavior_trees, openai_tracing, web_search, max_tool_calls)?;
+    update_settings_in_db(
+        conn,
+        behavior_trees,
+        openai_tracing,
+        web_search,
+        max_tool_calls,
+    )?;
     let _ = bus
         .ui_to_agent_tx
         .send(UiToAgentEvent::SettingsUpdateEvent {
@@ -63,7 +77,13 @@ pub fn submit_brave_api_key(
     max_tool_calls: i32,
     api_key: String,
 ) -> Result<(), String> {
-    update_settings_in_db(conn, behavior_trees, openai_tracing, web_search_enabled, max_tool_calls)?;
+    update_settings_in_db(
+        conn,
+        behavior_trees,
+        openai_tracing,
+        web_search_enabled,
+        max_tool_calls,
+    )?;
     let _ = bus
         .ui_to_agent_tx
         .send(UiToAgentEvent::SettingsUpdateEvent {

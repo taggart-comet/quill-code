@@ -1,14 +1,14 @@
 use crate::domain::permissions::UserPermissionDecision;
 use crate::domain::session::ServiceError;
-use crate::domain::SessionService;
 use crate::domain::todo::{TodoList, TodoListStatus};
 use crate::domain::workflow::{CancellationToken, Chain, Error as WorkflowError};
+use crate::domain::SessionService;
 use crate::domain::{AgentModeType, Project, Session, UserSettings};
 use crate::infrastructure::event_bus::{AgentToUiEvent, PermissionUpdate, StepPhase};
+use crate::repository::SessionRequestsRepository;
 use crate::repository::{ProjectsRepository, SessionsRepository, TodoListRepository};
 use crossbeam_channel::Receiver;
 use std::time::Duration;
-use crate::repository::SessionRequestsRepository;
 
 #[derive(Debug, Clone)]
 pub struct PlanItem {
@@ -206,14 +206,19 @@ impl PlanService {
         let completed_count = total - remaining;
         let request_id = 1_000_000 + completed_count as u64;
 
-        let _ = self.event_sender.send(AgentToUiEvent::PermissionRequestEvent {
-            request_id,
-            tool_name: "build_from_plan".to_string(),
-            command: Some(format!("Continue to next: {}", next_title)),
-            paths: vec![format!("Completed {}/{}: {}", completed_count, total, title)],
-            scope: "session".to_string(),
-            is_read_only: false,
-        });
+        let _ = self
+            .event_sender
+            .send(AgentToUiEvent::PermissionRequestEvent {
+                request_id,
+                tool_name: "build_from_plan".to_string(),
+                command: Some(format!("Continue to next: {}", next_title)),
+                paths: vec![format!(
+                    "Completed {}/{}: {}",
+                    completed_count, total, title
+                )],
+                scope: "session".to_string(),
+                is_read_only: false,
+            });
 
         loop {
             if cancel.is_cancelled() {
@@ -222,8 +227,9 @@ impl PlanService {
 
             match confirmation_rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(update) if update.request_id == request_id => match update.decision {
-                    UserPermissionDecision::AllowOnce
-                    | UserPermissionDecision::AlwaysAllow => return Ok(true),
+                    UserPermissionDecision::AllowOnce | UserPermissionDecision::AlwaysAllow => {
+                        return Ok(true)
+                    }
                     UserPermissionDecision::Deny => return Ok(false),
                 },
                 Ok(_) => continue,
@@ -303,7 +309,7 @@ impl PlanService {
                 serde_json::json!({
                     "changes": merged_changes.clone()
                 })
-                    .to_string(),
+                .to_string(),
             )
         };
 

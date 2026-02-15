@@ -1,8 +1,8 @@
 use super::session::Session;
 use crate::domain::permissions::store::SqlitePermissionStore;
 use crate::domain::permissions::{PermissionChecker, PermissionConfig, PermissionPrompter};
-use crate::domain::todo::TodoList;
 use crate::domain::plan::PlanService;
+use crate::domain::todo::TodoList;
 use crate::domain::workflow::{CancellationToken, Chain, Error as WorkflowError, Workflow};
 use crate::domain::UserSettings;
 use crate::infrastructure::db::DbPool;
@@ -263,14 +263,7 @@ impl SessionService {
             self.confirmation_rx.clone(),
         );
 
-        plan_service.execute(
-            self,
-            plan,
-            session,
-            images,
-            user_settings,
-            cancel,
-        )
+        plan_service.execute(self, plan, session, images, user_settings, cancel)
     }
 
     /// Load the TODO-list for a session from the database
@@ -280,7 +273,6 @@ impl SessionService {
         let row = repo.get_by_session(session_id).ok()??;
         serde_json::from_str::<TodoList>(&row.content).ok()
     }
-
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -302,7 +294,9 @@ mod tests {
     use crate::infrastructure::event_bus::{AgentToUiEvent, PermissionUpdate};
     use crate::infrastructure::inference::{InferenceEngine, LLMInferenceResult};
     use crate::infrastructure::InfaError;
-use crate::repository::{ProjectsRepository, SessionsRepository, TodoListRepository, UserSettingsRepository};
+    use crate::repository::{
+        ProjectsRepository, SessionsRepository, TodoListRepository, UserSettingsRepository,
+    };
     use crossbeam_channel::{unbounded, Receiver, Sender};
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};

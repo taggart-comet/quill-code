@@ -137,7 +137,7 @@ impl<'a> UserSettingsRepository<'a> {
         let expiry = chrono::Utc::now().timestamp() + expires_in;
         self.conn
             .execute(
-            "UPDATE user_settings SET
+                "UPDATE user_settings SET
                  oauth_access_token = ?,
                  oauth_refresh_token = ?,
                  oauth_token_expiry = ?,

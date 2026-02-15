@@ -2,8 +2,8 @@ use crate::domain::AuthMethod;
 use crate::infrastructure::cli::helpers::{checkbox_item, list_state, panel_block};
 use crate::infrastructure::cli::theme::{Theme, PANEL_PADDING};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{List, ListItem};
 use ratatui::text::{Line, Span};
+use ratatui::widgets::{List, ListItem};
 use ratatui::{layout::Rect, Frame};
 
 pub fn render(
@@ -50,10 +50,7 @@ pub fn render(
         ])),
         ListItem::new(Line::from(vec![
             Span::raw("Auth: "),
-            Span::styled(
-                auth_status,
-                Style::default().fg(theme.active),
-            ),
+            Span::styled(auth_status, Style::default().fg(theme.active)),
         ])),
     ];
     let list = List::new(items)

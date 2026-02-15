@@ -84,7 +84,7 @@ fn permission_options(has_command: bool) -> Vec<&'static str> {
     } else {
         vec![
             "[A] Allow",
-            "[W] Allow All Writes in this Project",
+            "[W] Allow Similar Commands in this Project",
             "[D] Disallow",
         ]
     }

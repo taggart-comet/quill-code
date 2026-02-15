@@ -114,14 +114,27 @@ impl InferenceEngine for LocalEngine {
 
             // Set model configuration
             let mut model_config = std::collections::HashMap::new();
-            model_config.insert("temperature".to_string(), serde_json::json!(self.params.temperature));
+            model_config.insert(
+                "temperature".to_string(),
+                serde_json::json!(self.params.temperature),
+            );
             model_config.insert("top_p".to_string(), serde_json::json!(self.params.top_p));
-            model_config.insert("ctx_size".to_string(), serde_json::json!(self.params.ctx_size));
-            model_config.insert("threads".to_string(), serde_json::json!(self.params.threads));
+            model_config.insert(
+                "ctx_size".to_string(),
+                serde_json::json!(self.params.ctx_size),
+            );
+            model_config.insert(
+                "threads".to_string(),
+                serde_json::json!(self.params.threads),
+            );
             tracer.set_model_config(model_name, model_config);
         }
 
-        let prompt = format!("{}\n\n{}", chain.system_prompt.clone(), chain.get_steps_with_history()[0].context_payload.clone());
+        let prompt = format!(
+            "{}\n\n{}",
+            chain.system_prompt.clone(),
+            chain.get_steps_with_history()[0].context_payload.clone()
+        );
         let to_error = |msg: String| -> InfaError {
             std::io::Error::new(std::io::ErrorKind::Other, msg).into()
         };

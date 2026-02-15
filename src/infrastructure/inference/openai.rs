@@ -3,8 +3,8 @@ use crate::domain::ModelType;
 use crate::infrastructure::api_clients::openai::client::AuthToken;
 use crate::infrastructure::api_clients::openai::OpenAIClient;
 use crate::infrastructure::auth::refresh_oauth_tokens;
-use crate::repository::{ModelsRepository, UserSettingsRepository};
 use crate::infrastructure::InfaError;
+use crate::repository::{ModelsRepository, UserSettingsRepository};
 use openai_api_rust::models::ModelsApi;
 use openai_api_rust::*;
 use std::sync::Arc;
@@ -121,15 +121,16 @@ impl OpenAIEngine {
     }
 
     fn resolve_auth_token(&self) -> Result<AuthToken, InfaError> {
-        let conn_guard = self.conn.get().map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-        })?;
+        let conn_guard = self
+            .conn
+            .get()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         let settings_repo = UserSettingsRepository::new(&*conn_guard);
         let models_repo = ModelsRepository::new(&*conn_guard);
 
-        let settings = settings_repo.get_current().map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-        })?;
+        let settings = settings_repo
+            .get_current()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         let model_id = settings
             .current_model_id
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "No model selected"))?;
@@ -140,18 +141,18 @@ impl OpenAIEngine {
 
         match model.auth_type {
             crate::domain::ModelAuthType::ApiKey => {
-                let api_key = settings
-                    .openai_api_key
-                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Missing API key"))?;
+                let api_key = settings.openai_api_key.ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::Other, "Missing API key")
+                })?;
                 Ok(AuthToken::ApiKey(api_key))
             }
             crate::domain::ModelAuthType::OAuth => {
-                let mut access_token = settings
-                    .oauth_access_token
-                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Missing OAuth token"))?;
-                let refresh_token_val = settings
-                    .oauth_refresh_token
-                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Missing OAuth token"))?;
+                let mut access_token = settings.oauth_access_token.ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::Other, "Missing OAuth token")
+                })?;
+                let refresh_token_val = settings.oauth_refresh_token.ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::Other, "Missing OAuth token")
+                })?;
                 let account_id = settings.oauth_account_id;
 
                 if settings
@@ -168,7 +169,9 @@ impl OpenAIEngine {
                             new_tokens.expires_in,
                             new_tokens.account_id.as_deref(),
                         )
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                        .map_err(|e| {
+                            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                        })?;
                     access_token = new_tokens.access_token;
                 }
 

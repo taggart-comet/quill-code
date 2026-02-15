@@ -84,9 +84,7 @@ fn render_file_list(
                 ),
                 Span::styled(
                     format!(": +{} -{}", change.added_lines, change.deleted_lines),
-                    Style::default()
-                        .fg(theme.background)
-                        .bg(theme.active),
+                    Style::default().fg(theme.background).bg(theme.active),
                 ),
             ]));
         } else {
@@ -144,10 +142,7 @@ fn render_unified_diff(
                 .fg(theme.active)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            "(Press Esc to return)",
-            Style::default().fg(theme.border),
-        ),
+        Span::styled("(Press Esc to return)", Style::default().fg(theme.border)),
     ]);
 
     let mut lines: Vec<Line> = vec![header];
@@ -180,21 +175,20 @@ fn render_unified_diff(
             // Additions
             Line::from(Span::styled(
                 line.as_str(),
-                Style::default()
-                    .fg(theme.success)
-                    .bg(Color::Rgb(0, 40, 0)),
+                Style::default().fg(theme.success).bg(Color::Rgb(0, 40, 0)),
             ))
         } else if line.starts_with('-') {
             // Deletions
             Line::from(Span::styled(
                 line.as_str(),
-                Style::default()
-                    .fg(theme.error)
-                    .bg(Color::Rgb(40, 0, 0)),
+                Style::default().fg(theme.error).bg(Color::Rgb(40, 0, 0)),
             ))
         } else {
             // Context lines
-            Line::from(Span::styled(line.as_str(), Style::default().fg(theme.info_text)))
+            Line::from(Span::styled(
+                line.as_str(),
+                Style::default().fg(theme.info_text),
+            ))
         };
 
         lines.push(styled_line);
@@ -235,7 +229,13 @@ pub(crate) fn filter_diff_lines(unified_diff: &str, context: usize) -> Vec<Strin
     diff_lines
         .into_iter()
         .enumerate()
-        .filter_map(|(idx, line)| if include[idx] { Some(line.to_string()) } else { None })
+        .filter_map(|(idx, line)| {
+            if include[idx] {
+                Some(line.to_string())
+            } else {
+                None
+            }
+        })
         .collect()
 }
 

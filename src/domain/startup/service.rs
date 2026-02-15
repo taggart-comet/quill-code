@@ -190,7 +190,7 @@ impl StartupService {
 
         let requests_repo = SessionRequestsRepository::new(self.conn.clone());
         let request_rows = requests_repo
-            .find_by_session(session_id)
+            .find_by_session(session_id, session_row.history_from_request_id)
             .map_err(Error::Repository)?;
         let requests: Vec<SessionRequest> = request_rows
             .into_iter()

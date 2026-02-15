@@ -51,17 +51,22 @@ impl PermissionChecker {
         request: &dyn Request,
         project_id: Option<i32>,
     ) -> Result<bool, CheckerError> {
-
         // Auto-allow read-only operations within project root
         if tool.is_read_only() {
-            let all_within_project = tool.get_affected_paths(request)
-                .iter()
-                .all(|p| p.starts_with(&request.project_root().to_path_buf()));
+            let root = request.project_root().to_path_buf();
+            let all_within_project = tool.get_affected_paths(request).iter().all(|path| {
+                let candidate = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    root.join(path)
+                };
+                crate::utils::paths::is_within_root(&candidate, &root)
+            });
             if all_within_project {
                 return Ok(true);
             }
         }
-        
+
         let permission_request = PermissionRequest::new(
             tool.name().to_string(),
             tool.get_command(request),
@@ -105,9 +110,13 @@ impl PermissionChecker {
             return Ok(());
         }
 
+        let command_pattern = request.command.clone();
+
         // Minimal behavior: for project-scoped patch_files AlwaysAllow, store without
         // resource pattern so it applies to any path within the project for this tool.
-        let resource_pattern = if request.tool_name == "patch_files"
+        let resource_pattern = if command_pattern.is_some() {
+            None
+        } else if request.tool_name == "patch_files"
             && user_decision == UserPermissionDecision::AlwaysAllow
             && request.scope == PermissionScope::Project
         {
@@ -129,10 +138,10 @@ impl PermissionChecker {
 
         let permission = super::types::Permission::new(
             request.tool_name.clone(),
-            None, // No command pattern for session-wide
+            command_pattern,
             resource_pattern,
             user_decision,
-            PermissionScope::Project,
+            request.scope.clone(),
             request.project_id,
         );
 
@@ -212,7 +221,8 @@ mod tests {
     use crate::domain::permissions::types::Permission;
     use crate::domain::permissions::{PermissionRequest, PermissionScope};
     use crate::domain::session::{Request, SessionRequest};
-    use crate::domain::tools::{Error, Tool, ToolResult};
+    use crate::domain::tools::Tool;
+    use crate::domain::tools::{PatchFiles, ReadObjects, ShellExec};
     use crate::infrastructure::db::DbPool;
     use r2d2_sqlite::SqliteConnectionManager;
     use std::path::{Path, PathBuf};
@@ -220,14 +230,14 @@ mod tests {
     use tempfile::TempDir;
 
     struct TestDb {
-        _temp_dir: TempDir,
         pool: DbPool,
+        _tempdir: TempDir,
     }
 
     impl TestDb {
         fn new() -> Self {
-            let temp_dir = tempfile::tempdir().unwrap();
-            let db_path = temp_dir.path().join("permissions.db");
+            let tempdir = tempfile::tempdir().unwrap();
+            let db_path = tempdir.path().join("unit_test.db");
             let manager = SqliteConnectionManager::file(&db_path);
             let pool = r2d2::Pool::new(manager).unwrap();
             let conn = pool.get().unwrap();
@@ -248,8 +258,8 @@ mod tests {
             .unwrap();
 
             Self {
-                _temp_dir: temp_dir,
                 pool,
+                _tempdir: tempdir,
             }
         }
 
@@ -327,132 +337,6 @@ mod tests {
         }
     }
 
-    struct ReadOnlyTool {
-        paths: Vec<PathBuf>,
-    }
-
-    impl Tool for ReadOnlyTool {
-        fn name(&self) -> &'static str {
-            "read_only"
-        }
-
-        fn parse_input(&self, _input: String, _call_id: String) -> Option<Error> {
-            None
-        }
-
-        fn work(&self, _request: &dyn Request) -> ToolResult {
-            ToolResult::ok(
-                "read_only".to_string(),
-                String::new(),
-                String::new(),
-                String::new(),
-            )
-        }
-
-        fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({})
-        }
-
-        fn desc(&self) -> String {
-            "read only".to_string()
-        }
-
-        fn get_input(&self) -> String {
-            String::new()
-        }
-
-        fn get_affected_paths(&self, _request: &dyn Request) -> Vec<PathBuf> {
-            self.paths.clone()
-        }
-
-        fn is_read_only(&self) -> bool {
-            true
-        }
-    }
-
-    struct WriteTool {
-        paths: Vec<PathBuf>,
-    }
-
-    impl Tool for WriteTool {
-        fn name(&self) -> &'static str {
-            "write_tool"
-        }
-
-        fn parse_input(&self, _input: String, _call_id: String) -> Option<Error> {
-            None
-        }
-
-        fn work(&self, _request: &dyn Request) -> ToolResult {
-            ToolResult::ok(
-                "write_tool".to_string(),
-                String::new(),
-                String::new(),
-                String::new(),
-            )
-        }
-
-        fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({})
-        }
-
-        fn desc(&self) -> String {
-            "write tool".to_string()
-        }
-
-        fn get_input(&self) -> String {
-            String::new()
-        }
-
-        fn get_affected_paths(&self, _request: &dyn Request) -> Vec<PathBuf> {
-            self.paths.clone()
-        }
-    }
-
-    struct CommandTool {
-        command: String,
-        paths: Vec<PathBuf>,
-    }
-
-    impl Tool for CommandTool {
-        fn name(&self) -> &'static str {
-            "command_tool"
-        }
-
-        fn parse_input(&self, _input: String, _call_id: String) -> Option<Error> {
-            None
-        }
-
-        fn work(&self, _request: &dyn Request) -> ToolResult {
-            ToolResult::ok(
-                "command_tool".to_string(),
-                String::new(),
-                String::new(),
-                String::new(),
-            )
-        }
-
-        fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({})
-        }
-
-        fn desc(&self) -> String {
-            "command tool".to_string()
-        }
-
-        fn get_input(&self) -> String {
-            String::new()
-        }
-
-        fn get_command(&self, _request: &dyn Request) -> Option<String> {
-            Some(self.command.clone())
-        }
-
-        fn get_affected_paths(&self, _request: &dyn Request) -> Vec<PathBuf> {
-            self.paths.clone()
-        }
-    }
-
     #[test]
     fn read_only_within_project_root_skips_prompt() {
         let temp = tempfile::tempdir().unwrap();
@@ -476,9 +360,47 @@ mod tests {
             prompter,
         );
         let request = TestRequest { root };
-        let tool = ReadOnlyTool {
-            paths: vec![file_path],
-        };
+        let tool = ReadObjects::new();
+        tool.parse_input(
+            serde_json::json!({"path": file_path.to_string_lossy().to_string(), "query": "main"})
+                .to_string(),
+            "call-1".to_string(),
+        );
+
+        let allowed = checker.check(&tool, &request, Some(1)).unwrap();
+
+        assert!(allowed);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn read_only_relative_path_within_project_root_skips_prompt() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let file_path = root.join("sample.txt");
+        std::fs::write(&file_path, "data").unwrap();
+
+        let test_db = TestDb::new();
+        let store = test_db.store();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let prompter = Arc::new(TestPrompter {
+            calls: Arc::clone(&calls),
+            decision: UserPermissionDecision::AlwaysAllow,
+        });
+        let checker = PermissionChecker::new_with_prompter(
+            store,
+            PermissionConfig {
+                default_decision: SystemPermissionDecision::Ask,
+                ..PermissionConfig::default()
+            },
+            prompter,
+        );
+        let request = TestRequest { root };
+        let tool = ReadObjects::new();
+        tool.parse_input(
+            serde_json::json!({"path": "sample.txt", "query": "main"}).to_string(),
+            "call-1".to_string(),
+        );
 
         let allowed = checker.check(&tool, &request, Some(1)).unwrap();
 
@@ -510,14 +432,59 @@ mod tests {
             prompter,
         );
         let request = TestRequest { root };
-        let tool = ReadOnlyTool {
-            paths: vec![external_file],
-        };
+        let tool = ReadObjects::new();
+        tool.parse_input(
+            serde_json::json!({"path": external_file.to_string_lossy().to_string(), "query": "main"}).to_string(),
+            "call-1".to_string(),
+        );
 
         let allowed = checker.check(&tool, &request, Some(1)).unwrap();
 
         assert!(allowed);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn command_permission_persists_without_resource_pattern() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+
+        let test_db = TestDb::new();
+        let store = test_db.store();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let prompter = Arc::new(TestPrompter {
+            calls: Arc::clone(&calls),
+            decision: UserPermissionDecision::AlwaysAllow,
+        });
+        let checker = PermissionChecker::new_with_prompter(
+            store.clone(),
+            PermissionConfig {
+                default_decision: SystemPermissionDecision::Ask,
+                ..PermissionConfig::default()
+            },
+            prompter,
+        );
+        let request = TestRequest { root };
+        let tool = ShellExec::new();
+        tool.parse_input(
+            serde_json::json!({"command": "cargo check"}).to_string(),
+            "call-1".to_string(),
+        );
+
+        let allowed = checker.check(&tool, &request, Some(1)).unwrap();
+        assert!(allowed);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let allowed_again = checker.check(&tool, &request, Some(1)).unwrap();
+        assert!(allowed_again);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let stored = store
+            .find_permission("shell_exec", 1, "cargo check", "")
+            .unwrap()
+            .expect("expected stored permission");
+        assert!(stored.resource_pattern.is_none());
+        assert_eq!(stored.command_pattern.as_deref(), Some("cargo check"));
     }
 
     #[test]
@@ -543,9 +510,13 @@ mod tests {
             prompter,
         );
         let request = TestRequest { root };
-        let tool = WriteTool {
-            paths: vec![file_path],
-        };
+        let tool = PatchFiles::new();
+        let patch =
+            "*** Begin Patch\n*** Update File: sample.txt\n@@\n-line1\n+line1\n*** End Patch";
+        tool.parse_input(
+            serde_json::json!({"patch": patch}).to_string(),
+            "call-1".to_string(),
+        );
 
         let allowed = checker.check(&tool, &request, Some(1)).unwrap();
 
@@ -563,7 +534,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let prompter = Arc::new(TestPrompter {
             calls: Arc::clone(&calls),
-            decision: UserPermissionDecision::AlwaysAllow,
+            decision: UserPermissionDecision::AllowOnce,
         });
         let checker = PermissionChecker::new_with_prompter(
             store,
@@ -574,10 +545,11 @@ mod tests {
             prompter,
         );
         let request = TestRequest { root };
-        let tool = CommandTool {
-            command: "rm -rf /".to_string(),
-            paths: vec![],
-        };
+        let tool = ShellExec::new();
+        tool.parse_input(
+            serde_json::json!({"command": "rm -rf /"}).to_string(),
+            "call-1".to_string(),
+        );
 
         let allowed = checker.check(&tool, &request, Some(1)).unwrap();
 
@@ -607,10 +579,11 @@ mod tests {
             prompter,
         );
         let request = TestRequest { root };
-        let tool = CommandTool {
-            command: "cat /etc/hosts".to_string(),
-            paths: vec![restricted_path],
-        };
+        let tool = ShellExec::new();
+        tool.parse_input(
+            serde_json::json!({"command": format!("touch {}/passwd", restricted_path.to_string_lossy())}).to_string(),
+            "call-1".to_string(),
+        );
 
         let allowed = checker.check(&tool, &request, Some(1)).unwrap();
 
@@ -673,10 +646,7 @@ mod tests {
         );
         let test_db = TestDb::new();
         let store = test_db.store();
-        seed_permissions(
-            store.as_ref(),
-            vec![command_permission, path_permission],
-        );
+        seed_permissions(store.as_ref(), vec![command_permission, path_permission]);
         let checker = PermissionChecker::new_with_prompter(
             store,
             PermissionConfig::default(),

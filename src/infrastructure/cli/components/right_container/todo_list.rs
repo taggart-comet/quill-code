@@ -1,5 +1,7 @@
 use crate::infrastructure::cli::helpers::panel_block;
-use crate::infrastructure::cli::state::{TodoItemDisplay, TodoListDisplay, TodoListViewMode, UiMode, UiState};
+use crate::infrastructure::cli::state::{
+    TodoItemDisplay, TodoListDisplay, TodoListViewMode, UiMode, UiState,
+};
 use crate::infrastructure::cli::theme::{Theme, PANEL_PADDING};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -77,15 +79,13 @@ fn render_item_list(
 
         if is_selected {
             // Highlighted selection
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{}{} {}", prefix, status_icon, item.title),
-                    Style::default()
-                        .fg(theme.background)
-                        .bg(theme.active)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                format!("{}{} {}", prefix, status_icon, item.title),
+                Style::default()
+                    .fg(theme.background)
+                    .bg(theme.active)
+                    .add_modifier(Modifier::BOLD),
+            )]));
         } else {
             lines.push(Line::from(vec![
                 Span::styled(
@@ -145,10 +145,7 @@ fn render_item_detail(
                 .fg(theme.active)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            "(Press Esc to return)",
-            Style::default().fg(theme.border),
-        ),
+        Span::styled("(Press Esc to return)", Style::default().fg(theme.border)),
     ]);
 
     let mut lines: Vec<Line> = vec![header, Line::from("")];

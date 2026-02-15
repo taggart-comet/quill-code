@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     project_id INTEGER NOT NULL,
     name TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    history_from_request_id INTEGER,
     FOREIGN KEY (project_id) REFERENCES projects(id)
 );
 
@@ -53,7 +54,7 @@ CREATE TABLE IF NOT EXISTS session_requests (
     file_changes TEXT,
     mode TEXT NOT NULL DEFAULT 'build',
     created_at TEXT NOT NULL,
-    FOREIGN KEY (session_id) REFERENCES sessions(id),
+    FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
 
 CREATE TABLE IF NOT EXISTS permissions (

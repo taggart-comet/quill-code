@@ -7,6 +7,7 @@ pub struct SessionRow {
     pub project_id: i64,
     pub name: String,
     pub created_at: String,
+    pub history_from_request_id: Option<i64>,
 }
 
 impl SessionRow {
@@ -16,6 +17,7 @@ impl SessionRow {
             project_id: row.get(1)?,
             name: row.get(2)?,
             created_at: row.get(3)?,
+            history_from_request_id: row.get(4)?,
         })
     }
 }
@@ -34,8 +36,8 @@ impl<'a> SessionsRepository<'a> {
 
         self.conn
             .execute(
-                "INSERT INTO sessions (project_id, name, created_at) VALUES (?, ?, ?)",
-                params![project_id, name, created_at],
+                "INSERT INTO sessions (project_id, name, created_at, history_from_request_id) VALUES (?, ?, ?, ?)",
+                params![project_id, name, created_at, Option::<i64>::None],
             )
             .map_err(|e| e.to_string())?;
 
@@ -46,13 +48,14 @@ impl<'a> SessionsRepository<'a> {
             project_id,
             name: name.to_string(),
             created_at,
+            history_from_request_id: None,
         })
     }
 
     pub fn find_by_id(&self, id: i64) -> Result<Option<SessionRow>, String> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, project_id, name, created_at FROM sessions WHERE id = ?")
+            .prepare("SELECT id, project_id, name, created_at, history_from_request_id FROM sessions WHERE id = ?")
             .map_err(|e| e.to_string())?;
 
         let result = stmt
@@ -71,7 +74,7 @@ impl<'a> SessionsRepository<'a> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, project_id, name, created_at FROM sessions WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
+                "SELECT id, project_id, name, created_at, history_from_request_id FROM sessions WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
             )
             .map_err(|e| e.to_string())?;
 

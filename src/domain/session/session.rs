@@ -14,6 +14,7 @@ pub struct Session {
     project: Project,
     name: String,
     _created_at: u64,
+    history_from_request_id: Option<i64>,
     requests: Vec<SessionRequest>,
     current_request: String,
     current_user_settings: Option<UserSettings>,
@@ -79,6 +80,7 @@ impl Session {
             project,
             name: row.name,
             _created_at: row.created_at.parse().unwrap_or(0),
+            history_from_request_id: row.history_from_request_id,
             requests: Vec::new(),
             current_request: String::new(),
             current_user_settings: None,
@@ -148,7 +150,7 @@ impl Request for Session {
         let steps_repo = SessionRequestStepsRepository::new(conn.clone());
 
         // Load all steps from all requests in this session
-        let steps = match steps_repo.load_steps_for_session(self.id) {
+        let steps = match steps_repo.load_steps_for_session(self.id, self.history_from_request_id) {
             Ok(steps) => steps,
             Err(e) => {
                 log::warn!(

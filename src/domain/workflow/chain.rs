@@ -1,10 +1,10 @@
 use super::step::ChainStep;
-use crate::domain::tools::FileChange;
-use std::collections::HashMap;
 use super::step::StepType;
 use crate::domain::todo::TodoList;
+use crate::domain::tools::FileChange;
 use crate::domain::tools::ToolResult;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Represents an execution chain containing multiple steps
 /// The chain is built incrementally as tools are executed

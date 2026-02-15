@@ -117,22 +117,49 @@ impl SessionRequestsRepository {
     }
 
     /// Find all requests for a session, ordered by creation time
-    pub fn find_by_session(&self, session_id: i64) -> Result<Vec<SessionRequestRow>, String> {
+    pub fn find_by_session(
+        &self,
+        session_id: i64,
+        history_from_request_id: Option<i64>,
+    ) -> Result<Vec<SessionRequestRow>, String> {
         let conn = self
             .conn
             .get()
             .map_err(|e| format!("Failed to get connection: {}", e))?;
-        let mut stmt = conn
-            .prepare("SELECT id, session_id, prompt, result_summary, file_changes, mode, created_at FROM session_requests WHERE session_id = ? ORDER BY created_at ASC")
-            .map_err(|e| e.to_string())?;
-
-        let rows = stmt
-            .query_map(params![session_id], SessionRequestRow::from_row)
-            .map_err(|e| e.to_string())?;
 
         let mut requests = Vec::new();
-        for row in rows {
-            requests.push(row.map_err(|e| e.to_string())?);
+
+        match history_from_request_id {
+            Some(request_id) => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, session_id, prompt, result_summary, file_changes, mode, created_at FROM session_requests WHERE session_id = ? AND id >= ? ORDER BY created_at ASC",
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                let rows = stmt
+                    .query_map(params![session_id, request_id], SessionRequestRow::from_row)
+                    .map_err(|e| e.to_string())?;
+
+                for row in rows {
+                    requests.push(row.map_err(|e| e.to_string())?);
+                }
+            }
+            None => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, session_id, prompt, result_summary, file_changes, mode, created_at FROM session_requests WHERE session_id = ? ORDER BY created_at ASC",
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                let rows = stmt
+                    .query_map(params![session_id], SessionRequestRow::from_row)
+                    .map_err(|e| e.to_string())?;
+
+                for row in rows {
+                    requests.push(row.map_err(|e| e.to_string())?);
+                }
+            }
         }
 
         Ok(requests)

@@ -1,6 +1,6 @@
 use crate::domain::tools::FileChange;
-use crate::domain::AuthMethod;
 use crate::domain::AgentModeType;
+use crate::domain::AuthMethod;
 use crate::infrastructure::cli::loading_bar::LoadingBar;
 use crate::infrastructure::event_bus::{LocalModelInfo, OpenAiModelInfo};
 use ratatui_textarea::TextArea;
@@ -141,7 +141,9 @@ impl PopupInput {
 #[derive(Debug, Clone)]
 pub enum UiMode {
     Normal,
-    CommandsMenu { selected: usize },
+    CommandsMenu {
+        selected: usize,
+    },
     Popup(PopupState),
     FileChangesReview {
         selected_file: usize,
@@ -260,6 +262,7 @@ pub struct UiState {
     pub mode: UiMode,
     pub popup_input: Option<PopupInput>,
     pub main_body_scroll: usize,
+    pub main_body_max_scroll: usize,
     pub main_body_follow: bool,
     pub models: ModelsCache,
     pub settings: SettingsCache,
@@ -290,6 +293,7 @@ impl UiState {
             mode: UiMode::Normal,
             popup_input: None,
             main_body_scroll: 0,
+            main_body_max_scroll: 0,
             main_body_follow: true,
             models: ModelsCache {
                 status: LoadStatus::Unknown,
@@ -321,11 +325,6 @@ impl UiState {
             attached_images: Vec::new(),
             session_id: None,
         }
-    }
-
-    pub fn input_line_count(&self) -> usize {
-        let count = self.input.lines().len().max(1);
-        count.max(INPUT_MIN_HEIGHT)
     }
 
     pub fn push_progress(&mut self, entry: ProgressEntry) {

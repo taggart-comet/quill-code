@@ -1,4 +1,5 @@
 use crate::domain::session::Request;
+use crate::domain::tools::utils;
 use crate::domain::tools::{short_words, Error, Tool, ToolResult, TOOL_OUTPUT_BUDGET_CHARS};
 use serde::Deserialize;
 use serde_json::json;
@@ -39,75 +40,6 @@ struct ShellExecInputParsed {
 
 const DEFAULT_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 const TIMEOUT_POLL_MS: u64 = 50;
-
-fn is_allowed_read_only_command(command: &str) -> bool {
-    let trimmed = command.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-
-    let mut parts: Vec<&str> = Vec::new();
-    let mut start = 0;
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut prev_escape = false;
-
-    for (idx, ch) in trimmed.char_indices() {
-        if prev_escape {
-            prev_escape = false;
-            continue;
-        }
-
-        match ch {
-            '\\' => {
-                prev_escape = true;
-            }
-            '\'' if !in_double => {
-                in_single = !in_single;
-            }
-            '"' if !in_single => {
-                in_double = !in_double;
-            }
-            '|' if !in_single && !in_double => {
-                parts.push(trimmed[start..idx].trim());
-                start = idx + ch.len_utf8();
-            }
-            _ => {}
-        }
-    }
-
-    if !parts.is_empty() {
-        parts.push(trimmed[start..].trim());
-        if parts.len() != 2 {
-            return false;
-        }
-
-        return parts.iter().all(|part| is_allowed_read_only_command(part));
-    }
-
-    if trimmed.contains(';')
-        || trimmed.contains("&&")
-        || trimmed.contains("||")
-        || trimmed.contains('>')
-        || trimmed.contains('<')
-    {
-        return false;
-    }
-
-    let mut parts = trimmed.split_whitespace();
-    let first = parts.next().unwrap_or_default();
-    let args: Vec<&str> = parts.collect();
-
-    match first {
-        "rg" | "grep" | "glob" | "cat" | "head" | "tail" | "less" | "more" | "wc" | "cut"
-        | "sort" | "uniq" | "find" | "ls" | "tree" | "stat" | "file" | "awk" | "pwd" | "which"
-        | "type" | "nl" => true,
-        "sed" => args
-            .iter()
-            .any(|arg| *arg == "-n" || *arg == "--quiet" || *arg == "--silent"),
-        _ => false,
-    }
-}
 
 impl Tool for ShellExec {
     fn name(&self) -> &'static str {
@@ -283,7 +215,7 @@ DO NOT use it to change files, use `patch_files` tool for this.",
             .as_ref()
             .map(|input| input.command.clone())
             .unwrap_or_default();
-        let label = short_words(&command, 2);
+        let label = short_words(&command, 3);
         if label.is_empty() {
             "Running command".to_string()
         } else {
@@ -307,37 +239,20 @@ DO NOT use it to change files, use `patch_files` tool for this.",
                 paths.push(PathBuf::from(working_dir));
             }
 
-            // Try to extract file paths from common commands
-            let command = &input.command;
-
-            // Extract paths from commands like `rm file.txt`, `touch file.txt`, etc.
-            if command.starts_with("rm ")
-                || command.starts_with("touch ")
-                || command.starts_with("mkdir ")
-            {
-                let parts: Vec<&str> = command.split_whitespace().collect();
-                for part in parts.iter().skip(1) {
-                    if !part.starts_with('-') {
-                        // Skip flags
-                        let path = PathBuf::from(part);
-                        if !path.is_absolute() {
-                            paths.push(request.project_root().join(path));
-                        } else {
-                            paths.push(path);
-                        }
+            // Tokenize the command using proper shell quoting rules, then
+            // collect any token that looks like a filesystem path.
+            if let Ok(tokens) = shell_words::split(&input.command) {
+                for token in tokens.iter().skip(1) {
+                    if token.starts_with('-') || token == ">" || token == ">>" {
+                        continue;
                     }
-                }
-            }
-
-            // Extract paths from redirect operations like `echo content > file.txt`
-            if let Some(redirect_pos) = command.find('>') {
-                let after_redirect = &command[redirect_pos + 1..].trim();
-                if let Some(file_path) = after_redirect.split_whitespace().next() {
-                    let path = PathBuf::from(file_path);
-                    if !path.is_absolute() {
-                        paths.push(request.project_root().join(path));
-                    } else {
-                        paths.push(path);
+                    if token.contains('/') || token.starts_with('.') {
+                        let path = PathBuf::from(token);
+                        if path.is_absolute() {
+                            paths.push(path);
+                        } else {
+                            paths.push(request.project_root().join(path));
+                        }
                     }
                 }
             }
@@ -351,7 +266,7 @@ DO NOT use it to change files, use `patch_files` tool for this.",
             .lock()
             .unwrap()
             .as_ref()
-            .map(|input| is_allowed_read_only_command(&input.command))
+            .map(|input| utils::is_read_only_command(&input.command))
             .unwrap_or(false)
     }
 }
@@ -787,6 +702,16 @@ mod tests {
         assert!(tool
             .parse_input(
                 r#"{"command":"rg -n \"insert_char|delete_prev_char|next_char_boundary|prev_char_boundary\" src/infrastructure/cli/helpers.rs src/infrastructure/cli/controls.rs"}"#
+                    .to_string(),
+                "call-id".to_string()
+            )
+            .is_none());
+        assert!(tool.is_read_only());
+
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(
+                r#"{"command":"grep -n \"INSERT INTO\" db-snapshot/courses_copy.sql | head -n 20"}"#
                     .to_string(),
                 "call-id".to_string()
             )

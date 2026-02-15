@@ -42,8 +42,11 @@ impl ResponseDTO {
                     }
                 }
             } else if item.kind == "function_call" {
-                if let (Some(name), Some(arguments), Some(call_id)) = (item.name.as_ref(), item.arguments.as_ref(), item.call_id.as_ref())
-                {
+                if let (Some(name), Some(arguments), Some(call_id)) = (
+                    item.name.as_ref(),
+                    item.arguments.as_ref(),
+                    item.call_id.as_ref(),
+                ) {
                     tool_call = Some(FunctionCall {
                         name: name.to_string(),
                         arguments: arguments.to_string(),

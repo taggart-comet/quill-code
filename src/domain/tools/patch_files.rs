@@ -6,6 +6,7 @@ use similar::TextDiff;
 use std::fs;
 use std::path::{Component, PathBuf};
 use std::sync::Mutex;
+use std::time::Instant;
 use zenpatch::apply as apply_patch;
 use zenpatch::parser::text_to_patch::text_to_patch;
 use zenpatch::Vfs;
@@ -31,6 +32,33 @@ impl PatchFiles {
         Self {
             input: Mutex::new(None),
         }
+    }
+
+    fn normalize_patch_paths(patch: &str, project_root: &std::path::Path) -> Result<String, Error> {
+        let mut normalized_lines = Vec::new();
+        for line in patch.lines() {
+            if let Some(path) = line.strip_prefix("*** Update File: ") {
+                let normalized = normalize_patch_path(path, project_root)?;
+                normalized_lines.push(format!("*** Update File: {}", normalized));
+            } else if let Some(path) = line.strip_prefix("*** Add File: ") {
+                let normalized = normalize_patch_path(path, project_root)?;
+                normalized_lines.push(format!("*** Add File: {}", normalized));
+            } else if let Some(path) = line.strip_prefix("*** Delete File: ") {
+                let normalized = normalize_patch_path(path, project_root)?;
+                normalized_lines.push(format!("*** Delete File: {}", normalized));
+            } else if let Some(path) = line.strip_prefix("*** Move to: ") {
+                let normalized = normalize_patch_path(path, project_root)?;
+                normalized_lines.push(format!("*** Move to: {}", normalized));
+            } else {
+                normalized_lines.push(line.to_string());
+            }
+        }
+
+        let mut normalized = normalized_lines.join("\n");
+        if patch.ends_with('\n') {
+            normalized.push('\n');
+        }
+        Ok(normalized)
     }
 
     fn parse_input_json(raw: &str) -> Result<PatchFilesInput, Error> {
@@ -87,7 +115,29 @@ impl Tool for PatchFiles {
             }
         };
 
-        let actions = match text_to_patch(&input.patch) {
+        let overall_start = Instant::now();
+        log::debug!("patch_files: start (patch_bytes={})", input.patch.len());
+
+        let project_root = request.project_root();
+        let normalize_start = Instant::now();
+        let normalized_patch = match Self::normalize_patch_paths(&input.patch, project_root) {
+            Ok(patch) => patch,
+            Err(e) => {
+                return ToolResult::error(
+                    self.name().to_string(),
+                    input.raw.clone(),
+                    e.to_string(),
+                    input.call_id.clone(),
+                )
+            }
+        };
+        log::debug!(
+            "patch_files: normalized patch in {:?}",
+            normalize_start.elapsed()
+        );
+
+        let parse_start = Instant::now();
+        let actions = match text_to_patch(&normalized_patch) {
             Ok(actions) => actions,
             Err(e) => {
                 return ToolResult::error(
@@ -98,6 +148,11 @@ impl Tool for PatchFiles {
                 )
             }
         };
+        log::debug!(
+            "patch_files: parsed patch (actions={}) in {:?}",
+            actions.len(),
+            parse_start.elapsed()
+        );
 
         let mut vfs = Vfs::new();
         let mut touched_paths: Vec<String> = Vec::new();
@@ -114,7 +169,7 @@ impl Tool for PatchFiles {
             }
         }
 
-        let project_root = request.project_root();
+        let read_start = Instant::now();
         for path in &touched_paths {
             let rel_path = std::path::Path::new(path);
             if rel_path.is_absolute()
@@ -131,6 +186,7 @@ impl Tool for PatchFiles {
             }
             let fs_path = project_root.join(rel_path);
             if fs_path.exists() {
+                log::debug!("patch_files: reading {}", fs_path.display());
                 match fs::read_to_string(&fs_path) {
                     Ok(content) => {
                         original_contents.insert(path.clone(), content.clone());
@@ -147,8 +203,10 @@ impl Tool for PatchFiles {
                 }
             }
         }
+        log::debug!("patch_files: read stage in {:?}", read_start.elapsed());
 
-        let new_vfs = match apply_patch(&input.patch, &vfs) {
+        let apply_start = Instant::now();
+        let new_vfs = match apply_patch(&normalized_patch, &vfs) {
             Ok(new_vfs) => new_vfs,
             Err(e) => {
                 return ToolResult::error(
@@ -159,7 +217,9 @@ impl Tool for PatchFiles {
                 )
             }
         };
+        log::debug!("patch_files: applied patch in {:?}", apply_start.elapsed());
 
+        let write_start = Instant::now();
         for path in &touched_paths {
             let fs_path = project_root.join(path);
             if let Some(content) = new_vfs.get(path) {
@@ -177,6 +237,7 @@ impl Tool for PatchFiles {
                         );
                     }
                 }
+                log::debug!("patch_files: writing {}", fs_path.display());
                 if let Err(e) = fs::write(&fs_path, content) {
                     return ToolResult::error(
                         self.name().to_string(),
@@ -186,6 +247,7 @@ impl Tool for PatchFiles {
                     );
                 }
             } else if fs_path.exists() {
+                log::debug!("patch_files: deleting {}", fs_path.display());
                 if let Err(e) = fs::remove_file(&fs_path) {
                     return ToolResult::error(
                         self.name().to_string(),
@@ -196,8 +258,10 @@ impl Tool for PatchFiles {
                 }
             }
         }
+        log::debug!("patch_files: write stage in {:?}", write_start.elapsed());
 
         // Compute file changes
+        let diff_start = Instant::now();
         let mut file_changes = Vec::new();
         for path in &touched_paths {
             let original = original_contents.get(path).map(|s| s.as_str());
@@ -207,6 +271,8 @@ impl Tool for PatchFiles {
                 file_changes.push(change);
             }
         }
+        log::debug!("patch_files: diff stage in {:?}", diff_start.elapsed());
+        log::debug!("patch_files: total elapsed {:?}", overall_start.elapsed());
 
         let mut result = ToolResult::ok(
             self.name().to_string(),
@@ -304,11 +370,15 @@ impl Tool for PatchFiles {
 
         if let Ok(input) = self.load_input() {
             // Parse the patch to extract affected paths
-            if let Ok(actions) = text_to_patch(&input.patch) {
-                for action in &actions {
-                    paths.push(request.project_root().join(&action.path));
-                    if let Some(ref new_path) = action.new_path {
-                        paths.push(request.project_root().join(new_path));
+            let normalized_patch =
+                Self::normalize_patch_paths(&input.patch, request.project_root()).ok();
+            if let Some(patch) = normalized_patch {
+                if let Ok(actions) = text_to_patch(&patch) {
+                    for action in &actions {
+                        paths.push(request.project_root().join(&action.path));
+                        if let Some(ref new_path) = action.new_path {
+                            paths.push(request.project_root().join(new_path));
+                        }
                     }
                 }
             }
@@ -316,6 +386,26 @@ impl Tool for PatchFiles {
 
         paths
     }
+}
+
+fn normalize_patch_path(path: &str, project_root: &std::path::Path) -> Result<String, Error> {
+    let path_buf = PathBuf::from(path);
+    if path_buf
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(Error::Parse(format!(
+            "Invalid path outside project root: {}",
+            path
+        )));
+    }
+    if path_buf.is_absolute() {
+        let stripped = path_buf
+            .strip_prefix(project_root)
+            .map_err(|_| Error::Parse(format!("Invalid path outside project root: {}", path)))?;
+        return Ok(stripped.to_string_lossy().to_string());
+    }
+    Ok(path_buf.to_string_lossy().to_string())
 }
 
 const DIFF_LINE_LIMIT: usize = 2000;
@@ -592,6 +682,37 @@ mod tests {
 
         let content = fs::read_to_string(&file_path).unwrap();
         assert!(content.contains("def bar():"), "File content: {}", content);
+    }
+
+    #[test]
+    fn test_patch_file_allows_absolute_path_within_project_root() {
+        let temp = tempdir().unwrap();
+
+        let file_path = temp.path().join("absolute.txt");
+        fs::write(&file_path, "before\n").unwrap();
+
+        let request = TestRequest::new(temp.path());
+
+        let tool = PatchFiles::new();
+        let patch = format!(
+            "*** Begin Patch\n*** Update File: {}\n@@\n-before\n+after\n*** End Patch",
+            file_path.display()
+        );
+        let input = format!(
+            "{{\"patch\":\"{}\"}}",
+            patch.replace('\n', "\\n").replace('"', "\\\"")
+        );
+        assert!(tool.parse_input(input, "call-id".to_string()).is_none());
+        let result = tool.work(&request);
+
+        assert!(
+            result.output_string().contains("successfully"),
+            "Expected success, got: {}",
+            result.output_string()
+        );
+
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert!(content.contains("after"), "File content: {}", content);
     }
 
     #[test]

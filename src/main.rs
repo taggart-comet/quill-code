@@ -26,6 +26,7 @@ fn main() {
 
 fn run(debug: bool) -> Result<(), String> {
     {
+        let app_name = "quillcode";
         let mut builder = env_logger::Builder::from_default_env();
         if debug {
             builder.filter_level(log::LevelFilter::Debug);
@@ -34,7 +35,7 @@ fn run(debug: bool) -> Result<(), String> {
         }
         builder.filter_module("rustyline", log::LevelFilter::Info);
 
-        if let Some(project_dirs) = directories::ProjectDirs::from("com", "quillcode", "quillcode") {
+        if let Some(project_dirs) = directories::ProjectDirs::from("", "", app_name) {
             let log_dir = project_dirs.data_dir();
             if std::fs::create_dir_all(log_dir).is_ok() {
                 let log_path = log_dir.join("quillcode.log");

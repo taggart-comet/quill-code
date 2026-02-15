@@ -1,7 +1,7 @@
 mod agent_mode;
-pub mod plan;
 mod bt;
 pub mod permissions;
+pub mod plan;
 mod project;
 pub mod prompting;
 pub mod session;

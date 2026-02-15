@@ -6,7 +6,7 @@ QuillCode — agentic coding assistant CLI built in Rust. Uses LLM inference (lo
 
 ## Validation
 
-After every code change, run `cargo check` (or `cargo test` when tests exist for the affected area). Never leave the codebase in a state that doesn't compile.
+After every code change, run `cargo check --all-targets` (or `cargo test` when tests exist for the affected area). Never leave the codebase in a state that doesn't compile.
 
 ## Architecture
 

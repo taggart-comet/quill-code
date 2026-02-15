@@ -152,7 +152,10 @@ pub fn handle_mouse_event(state: &mut UiState, mouse: MouseEvent) {
 }
 
 fn scroll_up(state: &mut UiState, amount: usize) {
-    state.main_body_scroll = state.main_body_scroll.saturating_add(amount);
+    state.main_body_scroll = state
+        .main_body_scroll
+        .saturating_add(amount)
+        .min(state.main_body_max_scroll);
     state.main_body_follow = false;
 }
 

@@ -8,10 +8,10 @@ use crate::domain::session::Request;
 use crate::domain::todo::TodoListStatus;
 use crate::domain::workflow::toolset::NoneToolset;
 use crate::domain::workflow::toolset::ToolsetType;
-use crate::domain::AgentModeType;
+use crate::domain::{AgentModeType, ModelType};
 use crate::infrastructure::db::DbPool;
 use crate::infrastructure::event_bus::{AgentToUiEvent, StepPhase};
-use crate::infrastructure::inference::InferenceEngine;
+use crate::infrastructure::inference::{InferenceEngine, LLMInferenceResult};
 use crossbeam_channel::Sender;
 use openai_agents_tracing::{SpanKind, TracingFacade};
 use std::path::Path;
@@ -59,6 +59,23 @@ impl Workflow {
 
     pub fn get_chain(&self) -> &Chain {
         &self.chain
+    }
+
+    #[allow(dead_code)]
+    pub fn model_type(&self) -> ModelType {
+        self.engine.get_type()
+    }
+
+    #[allow(dead_code)]
+    pub fn generate_without_tools(
+        &self,
+        chain: &Chain,
+        images: &[String],
+        tracer: Option<&mut TracingFacade>,
+    ) -> Result<LLMInferenceResult, Error> {
+        self.engine
+            .generate(&[], chain, images, tracer)
+            .map_err(|err| Error::Inference(err.to_string()))
     }
 
     pub fn run(

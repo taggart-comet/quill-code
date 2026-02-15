@@ -8,6 +8,8 @@ use std::path::{Component, PathBuf};
 use std::sync::Mutex;
 use std::time::Instant;
 use zenpatch::apply as apply_patch;
+use zenpatch::data::line_type::LineType;
+use zenpatch::data::patch_action::PatchAction;
 use zenpatch::parser::text_to_patch::text_to_patch;
 use zenpatch::Vfs;
 
@@ -209,12 +211,35 @@ impl Tool for PatchFiles {
         let new_vfs = match apply_patch(&normalized_patch, &vfs) {
             Ok(new_vfs) => new_vfs,
             Err(e) => {
+                let mut diagnostic = String::new();
+                for action in &actions {
+                    if let Some(content) = original_contents.get(&action.path) {
+                        let lines: Vec<&str> = content.lines().collect();
+                        let total = lines.len();
+                        let snippet_start = find_patch_target_region(action, &lines);
+                        let start = snippet_start.saturating_sub(5);
+                        let end = (snippet_start + 30).min(total);
+                        diagnostic.push_str(&format!(
+                            "\n\nFile `{}` lines {}-{} (of {}):\n",
+                            action.path,
+                            start + 1,
+                            end,
+                            total
+                        ));
+                        for (i, line) in lines[start..end].iter().enumerate() {
+                            diagnostic.push_str(&format!("{:4}| {}\n", start + i + 1, line));
+                        }
+                    }
+                }
                 return ToolResult::error(
                     self.name().to_string(),
                     input.raw.clone(),
-                    format!("Patch Failed: {}. Next step: read the file region you’re editing (function/block + ~10 lines around it) and generate a new patch using those exact lines as context. Then retry patch_files.", e),
+                    format!(
+                        "Patch Failed: {}. Use the file content below to generate a corrected patch with accurate context lines.{}",
+                        e, diagnostic
+                    ),
                     input.call_id.clone(),
-                )
+                );
             }
         };
         log::debug!("patch_files: applied patch in {:?}", apply_start.elapsed());
@@ -314,8 +339,9 @@ impl Tool for PatchFiles {
 
     fn desc(&self) -> String {
         format!(
-            "Use the `{name}` tool to edit one or more files using the Begin Patch / Update File patch format.",
-            name = self.name()
+            "Use the `{name}` tool to edit one or more files using the Begin Patch / Update File patch format.\n\n{instructions}",
+            name = self.name(),
+            instructions = zenpatch::get_llm_instructions()
         )
     }
 
@@ -534,6 +560,52 @@ fn compute_file_change(path: &str, old: Option<&str>, new: Option<&str>) -> Opti
         }
         (None, None) => None,
     }
+}
+
+/// Estimate the line in the file where a patch was targeting by searching for
+/// the first chunk's leading context lines. Returns the best-matching line index,
+/// or 0 if no match is found.
+fn find_patch_target_region(action: &PatchAction, file_lines: &[&str]) -> usize {
+    let first_chunk = match action.chunks.first() {
+        Some(c) => c,
+        None => return 0,
+    };
+
+    // Collect leading context lines from the chunk
+    let context_lines: Vec<&str> = first_chunk
+        .lines
+        .iter()
+        .take_while(|(lt, _)| matches!(lt, LineType::Context))
+        .map(|(_, s)| s.as_str())
+        .collect();
+
+    if context_lines.is_empty() {
+        // Fall back to orig_index if available
+        return first_chunk.orig_index;
+    }
+
+    // Search file for best partial match of context lines
+    let mut best_idx = 0;
+    let mut best_score = 0;
+    for start in 0..file_lines.len() {
+        let mut score = 0;
+        for (j, ctx) in context_lines.iter().enumerate() {
+            if start + j < file_lines.len() && file_lines[start + j] == *ctx {
+                score += 1;
+            } else {
+                break;
+            }
+        }
+        if score > best_score {
+            best_score = score;
+            best_idx = start;
+        }
+        if best_score == context_lines.len() {
+            break; // Perfect match found
+        }
+    }
+
+    best_idx
 }
 
 impl Default for PatchFiles {

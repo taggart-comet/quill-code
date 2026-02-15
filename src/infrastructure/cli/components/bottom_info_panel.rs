@@ -35,9 +35,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &UiState, theme: Theme) {
             let has_todo_list =
                 state.todo_list.is_some() && !state.todo_list.as_ref().unwrap().items.is_empty();
 
-            let has_left_panel = has_file_changes || has_todo_list;
-            if has_left_panel {
-                "Shift+Tab to Review Left Panel | / for Menu"
+            if has_file_changes {
+                "Shift+Tab to Review File Changes | / for Menu"
+            } else if has_todo_list {
+                "Shift+Tab to Review TODO List | / for Menu"
             } else {
                 "/ for Menu"
             }

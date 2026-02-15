@@ -115,7 +115,9 @@ pub fn render(frame: &mut Frame, state: &mut UiState) {
         4
     };
     match &state.mode {
-        UiMode::CommandsMenu { selected } => commands_menu::render(frame, size, *selected, theme),
+        UiMode::CommandsMenu { selected } => {
+            commands_menu::render(frame, size, *selected, theme, state.session_id.is_some())
+        }
         UiMode::Popup(popup) => {
             render_popup(frame, size, chunks[input_chunk_index], state, popup, theme)
         }

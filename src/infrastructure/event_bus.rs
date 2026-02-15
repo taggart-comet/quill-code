@@ -53,6 +53,8 @@ pub enum UiToAgentEvent {
     SessionContinueEvent {
         session_id: i64,
     },
+    #[allow(dead_code)]
+    CompressRequestEvent,
     PermissionUpdateEvent {
         request_id: u64,
         decision: UserPermissionDecision,

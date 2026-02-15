@@ -325,7 +325,7 @@ fn handle_commands_key(
     key: KeyEvent,
     selected: &mut usize,
 ) -> Result<(), String> {
-    let item_count = commands_menu::commands_items().len();
+    let item_count = commands_menu::commands_items(state.session_id.is_some()).len();
     match key.code {
         KeyCode::Esc => state.mode = UiMode::Normal,
         KeyCode::Up => {
@@ -342,14 +342,23 @@ fn handle_commands_key(
             state.mode = UiMode::Normal;
             state.input.input(key);
         }
-        KeyCode::Enter => match *selected {
-            0 => select_openai_model::open_model_popup(conn, state),
-            1 => open_mode_popup(state),
-            2 => change_settings::open_settings_popup(conn, state),
-            3 => open_continue_popup(conn, state),
-            4 => request_exit(bus, state),
-            _ => state.mode = UiMode::Normal,
-        },
+        KeyCode::Enter => {
+            let has_session_id = state.session_id.is_some();
+            let compress_index = if has_session_id { 4 } else { usize::MAX };
+            let exit_index = if has_session_id { 5 } else { 4 };
+            match *selected {
+                0 => select_openai_model::open_model_popup(conn, state),
+                1 => open_mode_popup(state),
+                2 => change_settings::open_settings_popup(conn, state),
+                3 => open_continue_popup(conn, state),
+                idx if idx == compress_index => {
+                    let _ = bus.ui_to_agent_tx.send(UiToAgentEvent::CompressRequestEvent);
+                    state.mode = UiMode::Normal;
+                }
+                idx if idx == exit_index => request_exit(bus, state),
+                _ => state.mode = UiMode::Normal,
+            }
+        }
         _ => {}
     }
 

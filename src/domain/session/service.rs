@@ -1,16 +1,17 @@
+use super::request::Request;
 use super::session::Session;
 use crate::domain::permissions::store::SqlitePermissionStore;
 use crate::domain::permissions::{PermissionChecker, PermissionConfig, PermissionPrompter};
 use crate::domain::plan::PlanService;
 use crate::domain::todo::TodoList;
 use crate::domain::workflow::{CancellationToken, Chain, Error as WorkflowError, Workflow};
-use crate::domain::UserSettings;
+use crate::domain::{AgentModeType, ModelType, UserSettings};
 use crate::infrastructure::db::DbPool;
 use crate::infrastructure::event_bus::{AgentToUiEvent, PermissionUpdate};
 use crate::infrastructure::InferenceEngine;
 use crate::repository::{
-    ModelsRepository, SessionRequestStepsRepository, SessionRequestsRepository, TodoListRepository,
-    UserSettingsRepository,
+    ModelsRepository, SessionRequestStepsRepository, SessionRequestsRepository, SessionsRepository,
+    TodoListRepository, UserSettingsRepository,
 };
 use crossbeam_channel::{Receiver, Sender};
 use std::sync::Arc;
@@ -230,6 +231,91 @@ impl SessionService {
         }
     }
 
+    /// Compress full session history into a single summarized request.
+    /// Runs a single inference call with no tools available.
+    pub(crate) fn compress(&mut self, session: &Session) -> Result<Chain, ServiceError> {
+        let (settings_row, model_name) = {
+            let conn = self.conn.get().map_err(|e| {
+                ServiceError::Repository(format!("Failed to get database connection: {}", e))
+            })?;
+
+            let settings_repo = UserSettingsRepository::new(&*conn);
+            let settings_row = settings_repo
+                .get_current()
+                .map_err(|e| ServiceError::Repository(e))?;
+            let model_name = settings_row
+                .current_model_id
+                .and_then(|id| ModelsRepository::new(&*conn).find_by_id(id).ok())
+                .flatten()
+                .and_then(|model| model.model_name);
+            (settings_row, model_name)
+        };
+
+        let user_settings =
+            UserSettings::from(settings_row.clone()).with_current_model_name(model_name);
+
+        let requests_repo = SessionRequestsRepository::new(self.conn.clone());
+        let request_row = requests_repo
+            .create(session.id(), "Compress session history", AgentModeType::Build)
+            .map_err(ServiceError::Repository)?;
+        let request_id = request_row.id;
+
+        let mut request = session.clone();
+        request.set_current_request("Compress session history".to_string());
+        request.set_current_images(Vec::new());
+        request.set_current_user_settings(Some(user_settings));
+        request.set_current_mode(AgentModeType::Build);
+        request.set_conn(self.conn.clone());
+
+        let mut chain = Chain::new();
+        chain.add_history(request.get_history_steps());
+        chain.set_system_prompt(self.compress_system_prompt(self.workflow.model_type()));
+        chain.add_user_message(self.compress_user_prompt().to_string(), Vec::new());
+
+        let llm_output = match self
+            .workflow
+            .generate_without_tools(&chain, &[], None)
+            .map_err(ServiceError::Workflow)
+        {
+            Ok(output) => output,
+            Err(err) => {
+                chain.mark_failed(err.to_string());
+                let summary = chain.get_summary();
+                let _ = requests_repo.update_result(request_id, &summary);
+                return Err(err);
+            }
+        };
+
+        if !llm_output.raw_output.is_empty() {
+            chain.add_assistant_response(llm_output.summary.clone(), llm_output.raw_output);
+        }
+
+        chain.set_final_message(llm_output.summary.clone());
+
+        let summary = chain.get_summary();
+        requests_repo
+            .update_result(request_id, &summary)
+            .map_err(ServiceError::Repository)?;
+
+        let steps_repo = SessionRequestStepsRepository::new(self.conn.clone());
+        steps_repo
+            .save_steps_for_request(request_id, chain.get_steps())
+            .map_err(|e| {
+                log::error!("Failed to save steps for request {}: {}", request_id, e);
+                ServiceError::Repository(format!("Failed to save steps: {}", e))
+            })?;
+
+        let conn = self.conn.get().map_err(|e| {
+            ServiceError::Repository(format!("Failed to get database connection: {}", e))
+        })?;
+        let sessions_repo = SessionsRepository::new(&*conn);
+        sessions_repo
+            .update_history_from_request_id(session.id(), request_id)
+            .map_err(ServiceError::Repository)?;
+
+        Ok(chain)
+    }
+
     /// Sub-agent orchestrator: runs each pending TODO item as its own build() call
     fn build_from_plan(
         &mut self,
@@ -272,6 +358,20 @@ impl SessionService {
         let repo = TodoListRepository::new(&*conn);
         let row = repo.get_by_session(session_id).ok()??;
         serde_json::from_str::<TodoList>(&row.content).ok()
+    }
+
+    #[allow(dead_code)]
+    fn compress_system_prompt(&self, model_type: ModelType) -> String {
+        if model_type == ModelType::OpenAI {
+            "You are compressing a conversation history. Summarize the discussion so future requests can continue with minimal context. Include key decisions, requirements, and relevant technical details. Be concise. Do not call tools.".to_string()
+        } else {
+            "Summarize the conversation history with key decisions and technical details. Be concise. No tools.".to_string()
+        }
+    }
+
+    #[allow(dead_code)]
+    fn compress_user_prompt(&self) -> &'static str {
+        "Compress the full session history into a concise summary that preserves key context, decisions, and outstanding tasks."
     }
 }
 

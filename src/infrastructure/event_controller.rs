@@ -410,6 +410,67 @@ impl EventController {
 
                             let _ = self.bus.agent_to_ui_tx.send(self.settings_snapshot());
                         }
+                        UiToAgentEvent::CompressRequestEvent => {
+                            if worker_running {
+                                log::info!("Compress request skipped while worker running");
+                                continue;
+                            }
+
+                            let engine = match self.engine.clone() {
+                                Some(engine) => engine,
+                                None => {
+                                    send_failure_and_continue!(self, "No model selected");
+                                }
+                            };
+
+                            let session_id = match self.current_session_id {
+                                Some(id) => id,
+                                None => {
+                                    send_failure_and_continue!(
+                                        self,
+                                        "No active session to compress"
+                                    );
+                                }
+                            };
+
+                            self.cancel_token.reset();
+                            worker_running = true;
+
+                            let request_id = self.request_counter;
+                            self.request_counter = self.request_counter.saturating_add(1);
+                            let _ = self.bus.agent_to_ui_tx.send(
+                                AgentToUiEvent::RequestStartedEvent {
+                                    request_id,
+                                    label: "Compress".to_string(),
+                                    prompt: "Compress session history".to_string(),
+                                },
+                            );
+
+                            let (permission_response_tx, permission_response_rx) = unbounded();
+                            self.permission_response_tx = Some(permission_response_tx);
+
+                            let cancel_token = self.cancel_token.clone();
+                            let app_name = self.app_name.clone();
+                            let worker_status_tx = worker_status_tx.clone();
+                            let event_bus = Arc::new(self.bus.clone());
+                            thread::spawn(move || {
+                                let result = run_compress_worker(
+                                    &app_name,
+                                    engine,
+                                    request_id,
+                                    session_id,
+                                    cancel_token,
+                                    permission_response_rx,
+                                    event_bus.clone(),
+                                );
+
+                                if let Err(error) = result {
+                                    send_failure_event(&event_bus.agent_to_ui_tx, request_id, error);
+                                }
+
+                                let _ = worker_status_tx.send(());
+                            });
+                        }
                     }
                 }
             }
@@ -618,6 +679,101 @@ fn request_label(prompt: &str) -> String {
         label.push_str("...");
     }
     label
+}
+
+fn run_compress_worker(
+    app_name: &str,
+    engine: Arc<dyn InferenceEngine>,
+    request_id: u64,
+    session_id: i64,
+    cancel_token: CancellationToken,
+    permission_response_rx: Receiver<PermissionUpdate>,
+    event_bus: Arc<EventBus>,
+) -> Result<(), String> {
+    let worker_conn = infrastructure::db::init_db(app_name)
+        .map_err(|e| format!("Failed to open worker database: {}", e))?;
+
+    let confirmation_rx = permission_response_rx.clone();
+
+    let prompter = Arc::new(BusPermissionPrompter::new(
+        event_bus.agent_to_ui_tx.clone(),
+        permission_response_rx,
+    ));
+
+    let mut session_service = SessionService::new(
+        engine.clone(),
+        worker_conn.clone(),
+        false,
+        PermissionConfig::default(),
+        prompter,
+        event_bus.agent_to_ui_tx.clone(),
+        Some(confirmation_rx),
+    )
+    .map_err(|e| format!("Failed to create session service: {}", e))?;
+
+    let startup_service = StartupService::new(engine.clone(), worker_conn.clone());
+    let session = startup_service
+        .load_session(session_id)
+        .map_err(|e| e.to_string())?;
+
+    if cancel_token.is_cancelled() {
+        let _ = event_bus
+            .agent_to_ui_tx
+            .send(AgentToUiEvent::RequestFinishedEvent {
+                request_id,
+                status: RequestStatus::Cancelled,
+                summary: Some("Cancelled".to_string()),
+                final_message: None,
+            });
+        return Ok(());
+    }
+
+    let result = session_service.compress(&session);
+    match result {
+        Ok(chain) => {
+            emit_chain_progress(event_bus.agent_to_ui_tx.clone(), &chain);
+            if chain.is_failed {
+                let reason = if chain.fail_reason.is_empty() {
+                    "Workflow failed".to_string()
+                } else {
+                    chain.fail_reason
+                };
+                let _ = event_bus
+                    .agent_to_ui_tx
+                    .send(AgentToUiEvent::RequestFinishedEvent {
+                        request_id,
+                        status: RequestStatus::Failure,
+                        summary: Some(reason),
+                        final_message: None,
+                    });
+            } else {
+                let _ = event_bus
+                    .agent_to_ui_tx
+                    .send(AgentToUiEvent::RequestFinishedEvent {
+                        request_id,
+                        status: RequestStatus::Success,
+                        summary: Some(chain.get_summary()),
+                        final_message: chain.final_message.map(|msg| msg.to_string()),
+                    });
+            }
+            Ok(())
+        }
+        Err(domain::session::ServiceError::Workflow(domain::workflow::Error::Cancelled)) => {
+            let _ = event_bus
+                .agent_to_ui_tx
+                .send(AgentToUiEvent::RequestFinishedEvent {
+                    request_id,
+                    status: RequestStatus::Cancelled,
+                    summary: Some("Cancelled".to_string()),
+                    final_message: None,
+                });
+            Ok(())
+        }
+        Err(err) => {
+            let user_message = extract_user_facing_error(&err);
+            Err(user_message)
+        }
+    }
 }
 
 fn emit_chain_progress(

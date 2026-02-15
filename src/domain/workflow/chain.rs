@@ -70,6 +70,17 @@ impl Chain {
         self.history_steps = history;
     }
 
+    #[allow(dead_code)]
+    pub fn add_user_message(&mut self, prompt: String, images: Vec<String>) {
+        self.steps.push(ChainStep::user_message(prompt, images));
+    }
+
+    #[allow(dead_code)]
+    pub fn add_assistant_response(&mut self, summary: String, raw_output: String) {
+        self.steps
+            .push(ChainStep::assistant_response(summary, raw_output));
+    }
+
     /// Set the TODO list for this chain
     pub fn set_todo_list(&mut self, todo_list: Option<TodoList>) {
         self.todo_list = todo_list;

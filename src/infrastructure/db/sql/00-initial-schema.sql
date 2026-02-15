@@ -16,7 +16,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     project_id INTEGER NOT NULL,
     name TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    history_from_request_id INTEGER,
     FOREIGN KEY (project_id) REFERENCES projects(id)
 );
 

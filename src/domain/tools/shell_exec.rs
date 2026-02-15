@@ -664,6 +664,15 @@ mod tests {
         let tool = ShellExec::new();
         assert!(tool
             .parse_input(
+                r#"{"command":"rg -n \"admin_token\" frontend/src || true"}"#.to_string(),
+                "call-id".to_string()
+            )
+            .is_none());
+        assert!(tool.is_read_only());
+
+        let tool = ShellExec::new();
+        assert!(tool
+            .parse_input(
                 r#"{"command":"grep -n foo file.txt"}"#.to_string(),
                 "call-id".to_string()
             )

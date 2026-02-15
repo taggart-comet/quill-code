@@ -4,12 +4,18 @@ use crate::infrastructure::cli::theme::{Theme, PANEL_PADDING};
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::Paragraph;
 use ratatui::{layout::Rect, Frame};
 use unicode_width::UnicodeWidthStr;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &mut UiState, theme: Theme) {
-    let mut lines: Vec<Line> = Vec::new();
+    let block = panel_block(theme, theme.surface, PANEL_PADDING);
+    let inner = block.inner(area);
+    let panel_width = inner.width as usize;
+    let panel_height = inner.height as usize;
+
+    // 1. Build logical lines from all progress entries
+    let mut logical_lines: Vec<Line> = Vec::new();
     let mut first = true;
     for entry in state.progress.iter() {
         let style = match entry.kind {
@@ -36,13 +42,11 @@ pub fn render(frame: &mut Frame, area: Rect, state: &mut UiState, theme: Theme) 
             style
         };
 
-        // Add blank separator line between entries
         if !first {
-            lines.push(Line::from(Span::raw("")));
+            logical_lines.push(Line::from(Span::raw("")));
         }
         first = false;
 
-        // Add special formatting for user messages
         if matches!(
             entry.kind,
             ProgressKind::UserMessage
@@ -50,51 +54,88 @@ pub fn render(frame: &mut Frame, area: Rect, state: &mut UiState, theme: Theme) 
                 | ProgressKind::UserMessageError
                 | ProgressKind::UserMessageCancelled
         ) {
-            lines.extend(format_user_message(&entry.text, style, theme, entry.kind));
+            logical_lines.extend(format_user_message(&entry.text, style, theme, entry.kind));
         } else {
-            lines.extend(markdown_lines(&entry.text, style, theme));
+            logical_lines.extend(markdown_lines(&entry.text, style, theme));
         }
     }
     if state.main_body_follow {
-        lines.push(Line::from(Span::raw("")));
+        logical_lines.push(Line::from(Span::raw("")));
     }
 
-    let block = panel_block(theme, theme.surface, PANEL_PADDING);
-    let inner = block.inner(area);
-    let panel_width = inner.width as usize;
-    let panel_height = inner.height as usize;
+    // 2. Pre-wrap: split every logical line into visual rows that each fit panel_width.
+    //    After this, rows.len() == exact number of visual rows. No Wrap needed.
+    let rows = wrap_lines(logical_lines, panel_width);
 
-    let total_height = compute_wrapped_height(&lines, panel_width);
-    let max_scroll = total_height.saturating_sub(panel_height);
+    // 3. Slice visible window
+    let total = rows.len();
+    let max_scroll = total.saturating_sub(panel_height);
     state.main_body_max_scroll = max_scroll;
-
     let clamped = state.main_body_scroll.min(max_scroll);
-    let scroll_y = max_scroll.saturating_sub(clamped);
+    // scroll=0 means "pinned to bottom", higher means further up
+    let end = total.saturating_sub(clamped);
+    let start = end.saturating_sub(panel_height);
+    let visible: Vec<Line> = rows[start..end].to_vec();
 
-    let progress = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll_y as u16, 0))
-        .block(block);
+    let progress = Paragraph::new(visible).block(block);
     frame.render_widget(progress, area);
 }
 
-/// Approximate the total number of visual rows the lines will occupy
-/// after wrapping to the given panel width.
-fn compute_wrapped_height(lines: &[Line], panel_width: usize) -> usize {
-    if panel_width == 0 {
-        return lines.len();
+/// Split each Line into one or more Lines that fit within `max_width` columns.
+/// Splits happen at span boundaries when possible; long spans are split mid-text
+/// on character boundaries (word-boundary splitting is not attempted for simplicity).
+fn wrap_lines(lines: Vec<Line<'static>>, max_width: usize) -> Vec<Line<'static>> {
+    if max_width == 0 {
+        return lines;
     }
-    lines
-        .iter()
-        .map(|line| {
-            let w: usize = line.spans.iter().map(|s| s.content.width()).sum();
-            if w == 0 {
-                1 // empty lines still take one row
-            } else {
-                (w + panel_width - 1) / panel_width // ceil division
+    let mut out: Vec<Line<'static>> = Vec::new();
+    for line in lines {
+        let total_w: usize = line.spans.iter().map(|s| s.content.width()).sum();
+        if total_w <= max_width {
+            out.push(line);
+            continue;
+        }
+        // Need to split this line's spans across multiple rows
+        let mut row_spans: Vec<Span<'static>> = Vec::new();
+        let mut row_w: usize = 0;
+        for span in line.spans {
+            let span_w = span.content.width();
+            if row_w + span_w <= max_width {
+                row_w += span_w;
+                row_spans.push(span);
+                continue;
             }
-        })
-        .sum()
+            // This span doesn't fit entirely — split character by character
+            let style = span.style;
+            let mut buf = String::new();
+            let mut buf_w: usize = 0;
+            for ch in span.content.chars() {
+                let cw = UnicodeWidthStr::width(ch.encode_utf8(&mut [0u8; 4]) as &str);
+                if row_w + buf_w + cw > max_width && (row_w + buf_w) > 0 {
+                    // Flush buf into current row, then emit the row
+                    if !buf.is_empty() {
+                        row_spans.push(Span::styled(buf.clone(), style));
+                        buf.clear();
+                        buf_w = 0;
+                    }
+                    out.push(Line::from(
+                        row_spans.drain(..).collect::<Vec<_>>(),
+                    ));
+                    row_w = 0;
+                }
+                buf.push(ch);
+                buf_w += cw;
+            }
+            if !buf.is_empty() {
+                row_w += buf_w;
+                row_spans.push(Span::styled(buf, style));
+            }
+        }
+        if !row_spans.is_empty() {
+            out.push(Line::from(row_spans));
+        }
+    }
+    out
 }
 
 fn markdown_lines(text: &str, base_style: Style, theme: Theme) -> Vec<Line<'static>> {
@@ -151,7 +192,6 @@ fn markdown_lines(text: &str, base_style: Style, theme: Theme) -> Vec<Line<'stat
             }
             Event::Text(text) => {
                 if in_code_block {
-                    // Prefix each line with "│ " for visual distinction
                     for (i, code_line) in text.as_ref().lines().enumerate() {
                         if i > 0 {
                             push_line(&mut lines, &mut spans);
@@ -210,17 +250,15 @@ fn format_user_message(
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // Choose border color based on request status
     let border_color = match kind {
         ProgressKind::UserMessageSuccess => theme.success,
         ProgressKind::UserMessageError => theme.error,
         ProgressKind::UserMessageCancelled => theme.active,
-        _ => ratatui::style::Color::Yellow, // Default for UserMessage (in-progress)
+        _ => ratatui::style::Color::Yellow,
     };
     let border_style = Style::default().fg(border_color);
-    let border = "▌ "; // Block character for left border
+    let border = "▌ ";
 
-    // Process each line of the user's message with a colored left border
     for line in text.lines() {
         lines.push(Line::from(vec![
             Span::styled(border, border_style),
@@ -228,7 +266,6 @@ fn format_user_message(
         ]));
     }
 
-    // Add an empty line after the user message for spacing
     lines.push(Line::from(Span::raw("")));
 
     lines

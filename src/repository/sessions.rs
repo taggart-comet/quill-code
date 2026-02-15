@@ -89,6 +89,22 @@ impl<'a> SessionsRepository<'a> {
 
         Ok(sessions)
     }
+
+    #[allow(dead_code)]
+    pub fn update_history_from_request_id(
+        &self,
+        session_id: i64,
+        request_id: i64,
+    ) -> Result<(), String> {
+        self.conn
+            .execute(
+                "UPDATE sessions SET history_from_request_id = ? WHERE id = ?",
+                params![request_id, session_id],
+            )
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
 }
 
 fn chrono_now() -> String {

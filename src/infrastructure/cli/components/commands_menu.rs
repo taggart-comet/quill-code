@@ -13,8 +13,8 @@ pub struct CommandsMenuItem {
     pub description: &'static str,
 }
 
-pub fn commands_items() -> Vec<CommandsMenuItem> {
-    vec![
+pub fn commands_items(has_session_id: bool) -> Vec<CommandsMenuItem> {
+    let mut items = vec![
         CommandsMenuItem {
             label: "Model",
             description: "Select inference provider and model",
@@ -31,15 +31,31 @@ pub fn commands_items() -> Vec<CommandsMenuItem> {
             label: "Continue",
             description: "Resume a previous session",
         },
-        CommandsMenuItem {
-            label: "Exit",
-            description: "Close the application",
-        },
-    ]
+    ];
+
+    if has_session_id {
+        items.push(CommandsMenuItem {
+            label: "Compress",
+            description: "Compress current session context",
+        });
+    }
+
+    items.push(CommandsMenuItem {
+        label: "Exit",
+        description: "Close the application",
+    });
+
+    items
 }
 
-pub fn render(frame: &mut Frame, size: Rect, selected: usize, theme: Theme) {
-    let items = commands_items();
+pub fn render(
+    frame: &mut Frame,
+    size: Rect,
+    selected: usize,
+    theme: Theme,
+    has_session_id: bool,
+) {
+    let items = commands_items(has_session_id);
     let height = (items.len() * 2 + 2) as u16;
     let width = min(
         (size.width as f32 * 0.7) as u16,

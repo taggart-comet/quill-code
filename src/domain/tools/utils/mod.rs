@@ -71,6 +71,10 @@ pub fn is_read_only_command(command: &str) -> bool {
         return false;
     }
 
+    if let Some(left) = strip_harmless_or_true(trimmed) {
+        return is_read_only_command(left);
+    }
+
     let mut parts: Vec<&str> = Vec::new();
     let mut start = 0;
     let mut in_single = false;
@@ -132,4 +136,64 @@ pub fn is_read_only_command(command: &str) -> bool {
             .any(|arg| *arg == "-n" || *arg == "--quiet" || *arg == "--silent"),
         _ => false,
     }
+}
+
+fn strip_harmless_or_true(command: &str) -> Option<&str> {
+    let bytes = command.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut prev_escape = false;
+    let mut or_pos: Option<usize> = None;
+
+    let mut idx = 0;
+    while idx < bytes.len() {
+        if prev_escape {
+            prev_escape = false;
+            idx += 1;
+            continue;
+        }
+
+        match bytes[idx] {
+            b'\\' => {
+                prev_escape = true;
+            }
+            b'\'' if !in_double => {
+                in_single = !in_single;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+            }
+            b'|' if !in_single && !in_double => {
+                if idx + 1 < bytes.len() && bytes[idx + 1] == b'|' {
+                    if or_pos.is_some() {
+                        return None;
+                    }
+                    or_pos = Some(idx);
+                    idx += 2;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+
+        idx += 1;
+    }
+
+    let pos = or_pos?;
+    if pos + 2 > command.len() {
+        return None;
+    }
+
+    let left = command[..pos].trim();
+    let right = command[pos + 2..].trim();
+
+    if left.is_empty() {
+        return None;
+    }
+
+    if right == "true" {
+        return Some(left);
+    }
+
+    None
 }

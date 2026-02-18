@@ -396,6 +396,7 @@ impl Workflow {
             "Brainstorming..",
             "Predicting next symbols..",
             "Generating slop..",
+            "Struggling..",
         ];
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)

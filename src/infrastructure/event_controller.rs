@@ -674,9 +674,10 @@ fn request_label(prompt: &str) -> String {
         trimmed.to_string()
     };
     let max_len = 48;
-    if label.len() > max_len {
-        label.truncate(max_len.saturating_sub(3));
-        label.push_str("...");
+    if label.chars().count() > max_len {
+        let trunc_len = max_len.saturating_sub(3);
+        let truncated: String = label.chars().take(trunc_len).collect();
+        label = format!("{}...", truncated);
     }
     label
 }

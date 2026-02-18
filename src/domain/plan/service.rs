@@ -85,7 +85,8 @@ impl PlanService {
                 item.title, item.description
             );
 
-            let sub_session = self.create_sub_session(session.project_id(), item.index)?;
+            let sub_session =
+                self.create_sub_session(session.project_id(), session.name(), item.index)?;
 
             let chain_result = service.build(
                 &sub_session,
@@ -130,7 +131,12 @@ impl PlanService {
         }))
     }
 
-    fn create_sub_session(&self, project_id: i64, index: usize) -> Result<Session, ServiceError> {
+    fn create_sub_session(
+        &self,
+        project_id: i64,
+        parent_session_name: &str,
+        index: usize,
+    ) -> Result<Session, ServiceError> {
         let conn = self.conn.get().map_err(|e| {
             ServiceError::Repository(format!("Failed to get database connection: {}", e))
         })?;
@@ -143,7 +149,10 @@ impl PlanService {
                 ServiceError::Repository(format!("Project {} not found for session", project_id))
             })?;
         let session_row = sessions_repo
-            .create(project_id, &format!("todo-sub-agent-{}", index + 1))
+            .create(
+                project_id,
+                &format!("#{} todo-item: {}", index + 1, parent_session_name),
+            )
             .map_err(ServiceError::Repository)?;
         Ok(Session::from_row_with_project(
             session_row,

@@ -82,15 +82,7 @@ Run:
 ./target/release/quillcode
 ```
 
-You'll need an OpenAI API key set in the settings (or configure a local GGUF model path). Web search requires a Brave Search API key.
-
----
-
-## What I learned building it
-
-I wrote up my experience in detail here: [`models/articles/what_i_learned_making_my_own_coding_agent.md`](models/articles/what_i_learned_making_my_own_coding_agent.md)
-
-Short version: the loop is simple. Everything around the loop is hard. Tool descriptions encoded in English are as important as the tool implementations. The permission calibration problem is unsolved. Every model you add is a new behavioral surface you have to tune. And looking at traces from other agents side-by-side with your own is the most useful thing you can do once you have something running.
+You'll need an OpenAI API key or use OpenAI web login to save oauth token. Web search requires a Brave Search API key.
 
 ---
 
